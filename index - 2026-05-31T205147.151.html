@@ -1,0 +1,1525 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Readwise Inbox</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=Lato:wght@400;700&family=JetBrains+Mono&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+:root {
+  --bg:          #f5f0e8;
+  --bg-mid:      #ede7d9;
+  --surface:     #faf7f2;
+  --surface-2:   #f0ead8;
+  --border:      #c8bfa8;
+  --border-light:#ddd5c0;
+
+  --ink:         #2c2416;
+  --ink-light:   #6b5d4a;
+  --ink-dim:     #a89880;
+
+  --gold:        #b8860b;
+  --gold-light:  #d4a017;
+  --rust:        #8b3a2a;
+  --green:       #4a7c4e;
+  --red:         #9e2a2b;
+  --blue:        #2d5a8e;
+  --teal:        #2d7a6e;
+
+  --body: 'Lora', Georgia, serif;
+  --mono: 'JetBrains Mono', 'Courier New', monospace;
+  --label: 'Lato', sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  background-color: var(--bg);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
+  color: var(--ink);
+  font-family: var(--body);
+  font-size: 16px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+}
+
+a { color: var(--blue); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+button { font-family: var(--label); cursor: pointer; border: none; background: none; color: inherit; }
+
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-track { background: var(--bg-mid); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; border: 2px solid var(--bg-mid); }
+::-webkit-scrollbar-thumb:hover { background: var(--ink-dim); }
+
+/* ============ HEADER ============ */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background: var(--bg-mid);
+  border-bottom: 1px solid var(--border);
+  padding: env(safe-area-inset-top) 0 0 0;
+}
+.topbar-inner {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 13px 18px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.brand { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
+.brand-mark {
+  width: 40px; height: 40px;
+  flex: none;
+  border-radius: 8px;
+  background: var(--ink);
+  display: grid;
+  place-items: center;
+  color: var(--bg);
+  font-family: var(--body);
+  font-weight: 600;
+  font-size: 19px;
+  font-style: italic;
+}
+.brand-title { font-family: var(--body); font-weight: 600; font-size: 19px; letter-spacing: 0.2px; color: var(--ink); }
+.brand-sub { font-size: 12px; color: var(--ink-light); font-family: var(--label); letter-spacing: 0.2px; }
+
+.nav { display: flex; gap: 4px; }
+.nav-btn {
+  min-height: 44px;
+  padding: 0 15px;
+  border-radius: 8px;
+  color: var(--ink-light);
+  font-weight: 700;
+  font-size: 14px;
+  font-family: var(--label);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: background .15s, color .15s;
+}
+.nav-btn .nb-count {
+  font-size: 11px;
+  background: var(--surface-2);
+  color: var(--ink-light);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 1px 8px;
+  min-width: 22px;
+  text-align: center;
+}
+.nav-btn:hover { color: var(--ink); background: var(--surface); }
+.nav-btn.active { color: var(--bg); background: var(--ink); }
+.nav-btn.active .nb-count { background: rgba(245,240,232,0.22); color: var(--bg); border-color: transparent; }
+
+.hamburger {
+  display: none;
+  width: 44px; height: 44px;
+  border-radius: 8px;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+}
+.hamburger svg { width: 22px; height: 22px; }
+
+/* ============ LAYOUT ============ */
+.wrap { max-width: 860px; margin: 0 auto; padding: 28px 18px 120px; }
+.tab { display: none; }
+.tab.active { display: block; }
+
+.tab-head { margin-bottom: 22px; }
+.tab-head h2 { font-size: 25px; font-weight: 600; display: flex; align-items: center; gap: 10px; }
+.tab-head p { color: var(--ink-light); font-size: 15px; margin-top: 5px; font-family: var(--label); }
+
+/* ============ INBOX CARDS ============ */
+.feed { display: flex; flex-direction: column; gap: 18px; }
+
+.hl-card {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 20px 22px 20px 26px;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(44,36,22,0.05);
+  transition: opacity .25s, box-shadow .2s;
+}
+.hl-card::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 4px;
+  background: var(--gold);
+}
+.hl-card:hover { box-shadow: 0 4px 14px rgba(44,36,22,0.09); }
+.hl-card.done { opacity: 0.5; }
+.hl-card.skipped { opacity: 0.5; }
+.hl-card.done::before { background: var(--green); }
+.hl-card.skipped::before { background: var(--ink-dim); }
+
+.hl-top { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 13px; }
+.hl-src { flex: 1; min-width: 0; }
+.hl-src .t { font-weight: 600; font-size: 16px; color: var(--ink); }
+.hl-src .a { font-size: 13px; color: var(--ink-light); font-family: var(--label); margin-top: 2px; }
+
+.pill {
+  flex: none;
+  font-family: var(--label);
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  padding: 5px 9px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.pill.inbox { background: rgba(184,134,11,0.12); color: var(--gold); border: 1px solid rgba(184,134,11,0.35); }
+.pill.done  { background: rgba(74,124,78,0.12); color: var(--green); border: 1px solid rgba(74,124,78,0.35); }
+.pill.skip  { background: var(--surface-2); color: var(--ink-light); border: 1px solid var(--border); }
+
+.hl-text {
+  font-size: 18px;
+  font-style: italic;
+  font-family: var(--body);
+  line-height: 1.66;
+  color: var(--ink);
+  margin-bottom: 12px;
+  text-wrap: pretty;
+}
+.hl-text .qm { color: var(--ink-dim); font-style: normal; }
+.hl-text.clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.hl-more { display: none; color: var(--gold); font-weight: 700; font-size: 13px; font-family: var(--label); margin: -2px 0 12px; }
+.hl-more.show { display: inline-block; }
+
+.hl-note {
+  display: flex;
+  gap: 9px;
+  background: var(--surface-2);
+  border-left: 3px solid var(--rust);
+  border-radius: 0 6px 6px 0;
+  padding: 11px 13px;
+  margin-bottom: 15px;
+  font-size: 14.5px;
+  color: var(--ink-light);
+  font-family: var(--label);
+}
+.hl-note .ic { flex: none; }
+
+.hl-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.act {
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: 7px;
+  font-weight: 700;
+  font-size: 14px;
+  font-family: var(--label);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1.5px solid var(--border);
+  background: var(--surface);
+  color: var(--ink);
+  transition: background .15s, border-color .15s;
+}
+.act:hover { background: var(--surface-2); border-color: var(--ink-dim); }
+.act.primary { border-color: var(--gold); color: var(--gold); }
+.act.primary:hover { background: rgba(184,134,11,0.08); }
+.act.secondary { border-color: var(--rust); color: var(--rust); }
+.act.secondary:hover { background: rgba(139,58,42,0.07); }
+.act:disabled { opacity: 0.4; cursor: default; }
+.act:disabled:hover { background: var(--surface); border-color: var(--border); }
+
+/* ============ EMPTY STATE ============ */
+.empty { text-align: center; padding: 60px 20px; color: var(--ink-light); }
+.empty .big { font-size: 44px; margin-bottom: 14px; }
+.empty h3 { font-size: 19px; color: var(--ink); margin-bottom: 8px; font-weight: 600; }
+.empty p { font-size: 14.5px; margin-bottom: 22px; font-family: var(--label); }
+
+/* ============ ZETTELKASTEN ============ */
+.zettel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--rust);
+  border-radius: 6px;
+  padding: 17px 19px;
+  margin-bottom: 15px;
+  box-shadow: 0 1px 2px rgba(44,36,22,0.05);
+}
+.zettel .zpath { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); margin-bottom: 6px; }
+.zettel h4 { font-size: 17px; font-weight: 600; margin-bottom: 7px; }
+.zettel .zsum { font-size: 14.5px; color: var(--ink-light); margin-bottom: 9px; font-style: italic; }
+.zettel .zanm { font-size: 14px; color: var(--ink); margin-bottom: 10px; font-family: var(--label); white-space: pre-wrap; }
+.zettel .zquote { font-size: 13.5px; color: var(--ink-light); border-left: 2px solid var(--border); padding-left: 11px; margin-bottom: 10px; font-style: italic; }
+.zettel .zmeta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12px; color: var(--ink-dim); font-family: var(--label); }
+.tag { background: var(--surface-2); color: var(--rust); border: 1px solid var(--border); border-radius: 20px; padding: 2px 10px; font-size: 12px; font-weight: 700; font-family: var(--label); }
+
+/* ============ SETTINGS / PANELS ============ */
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 22px 24px;
+  margin-bottom: 18px;
+  box-shadow: 0 1px 2px rgba(44,36,22,0.05);
+}
+.panel h3 { font-size: 12px; font-family: var(--label); font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--gold); margin-bottom: 18px; }
+.field { margin-bottom: 17px; }
+.field:last-child { margin-bottom: 0; }
+.field label { display: block; font-size: 13px; font-weight: 700; font-family: var(--label); color: var(--ink-light); margin-bottom: 7px; }
+.field .hint { font-size: 12.5px; color: var(--ink-dim); margin-top: 6px; font-family: var(--label); }
+input, select, textarea {
+  width: 100%;
+  background: var(--bg);
+  border: 1.5px solid var(--border);
+  border-radius: 6px;
+  color: var(--ink);
+  font-family: var(--body);
+  font-size: 15px;
+  padding: 11px 13px;
+  min-height: 46px;
+  transition: border-color .15s, box-shadow .15s;
+}
+input, select { font-family: var(--label); }
+textarea { min-height: 96px; resize: vertical; line-height: 1.55; }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--gold); box-shadow: 0 0 0 3px rgba(184,134,11,0.15); }
+select { appearance: none; -webkit-appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--ink-light) 50%), linear-gradient(135deg, var(--ink-light) 50%, transparent 50%); background-position: calc(100% - 18px) center, calc(100% - 13px) center; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; padding-right: 38px; }
+
+.btn {
+  min-height: 46px;
+  padding: 0 18px;
+  border-radius: 7px;
+  font-weight: 700;
+  font-size: 14px;
+  font-family: var(--label);
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  border: 1.5px solid var(--border);
+  background: var(--surface);
+  color: var(--ink);
+  transition: background .15s, border-color .15s;
+}
+.btn:hover { background: var(--surface-2); border-color: var(--ink-dim); }
+.btn.gold { border-color: var(--gold); color: var(--gold); }
+.btn.gold:hover { background: rgba(184,134,11,0.08); }
+.btn.rust { border-color: var(--rust); color: var(--rust); }
+.btn.rust:hover { background: rgba(139,58,42,0.07); }
+.btn.solid { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.btn.solid:hover { background: #1f190f; }
+.btn.ghost { background: transparent; }
+.btn:disabled { opacity: 0.45; cursor: default; }
+.btn:disabled:hover { background: transparent; border-color: var(--border); }
+.btn-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+
+.status-dot { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-light); font-family: var(--label); }
+.status-dot .d { width: 9px; height: 9px; border-radius: 50%; background: var(--ink-dim); }
+.status-dot.ok .d { background: var(--green); }
+.status-dot.bad .d { background: var(--red); }
+
+.phase2-note { font-size: 12px; color: var(--ink-dim); background: var(--bg); border: 1px dashed var(--border); border-radius: 6px; padding: 10px 12px; margin-top: 12px; font-family: var(--label); }
+
+/* ============ MODAL ============ */
+.modal-back {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(44,36,22,0.42);
+  display: none;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 24px 16px;
+  overflow-y: auto;
+}
+.modal-back.open { display: flex; }
+.modal {
+  width: 100%;
+  max-width: 640px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 24px 60px rgba(44,36,22,0.3);
+  margin: auto 0;
+  animation: pop .18s ease;
+}
+.modal.narrow { max-width: 520px; }
+@keyframes pop { from { transform: translateY(12px); opacity: 0; } to { transform: none; opacity: 1; } }
+.modal-head { display: flex; align-items: center; gap: 12px; padding: 18px 22px; border-bottom: 1px solid var(--border); }
+.modal-head h3 { flex: 1; font-size: 14px; font-family: var(--label); font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: var(--ink); }
+.modal-x { width: 40px; height: 40px; border-radius: 7px; display: grid; place-items: center; font-size: 24px; color: var(--ink-light); background: var(--surface-2); }
+.modal-x:hover { color: var(--ink); background: var(--border-light); }
+.modal-body { padding: 22px; }
+.modal-foot { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; padding: 16px 22px; border-top: 1px solid var(--border); }
+
+.seg { display: flex; gap: 6px; background: var(--bg); border: 1.5px solid var(--border); border-radius: 8px; padding: 4px; }
+.seg button { flex: 1; min-height: 40px; border-radius: 5px; font-weight: 700; font-size: 13px; font-family: var(--label); color: var(--ink-light); }
+.seg button.active { background: var(--ink); color: var(--bg); }
+
+/* choice cards (type chooser) */
+.choices { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.choice {
+  text-align: left;
+  border: 1.5px solid var(--border);
+  background: var(--bg);
+  border-radius: 8px;
+  padding: 20px 18px;
+  transition: border-color .15s, background .15s, transform .12s;
+  min-height: 132px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.choice:hover { border-color: var(--gold); background: var(--surface); transform: translateY(-2px); }
+.choice .ci { font-size: 28px; }
+.choice .ct { font-weight: 600; font-size: 17px; font-family: var(--body); color: var(--ink); }
+.choice .cd { font-size: 13px; color: var(--ink-light); font-family: var(--label); }
+
+/* collapsible */
+.collapse { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 12px; overflow: hidden; background: var(--bg); }
+.collapse summary { list-style: none; cursor: pointer; padding: 13px 15px; font-weight: 700; font-size: 14px; font-family: var(--label); display: flex; align-items: center; gap: 9px; color: var(--ink); min-height: 46px; }
+.collapse summary::-webkit-details-marker { display: none; }
+.collapse summary .chev { margin-left: auto; transition: transform .2s; color: var(--ink-light); }
+.collapse[open] summary .chev { transform: rotate(90deg); }
+.collapse .cbody { padding: 0 15px 15px; }
+.readonly-box { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; font-size: 14px; color: var(--ink-light); line-height: 1.6; font-family: var(--label); }
+.readonly-box .quote { font-style: italic; color: var(--ink); margin-bottom: 6px; font-family: var(--body); }
+.cover-thumb { max-width: 120px; border-radius: 5px; margin-top: 10px; display: block; border: 1px solid var(--border); }
+
+/* prompt block */
+.prompt-block { background: var(--ink); border-radius: 7px; overflow: hidden; margin-bottom: 8px; }
+.prompt-block .pb-head { display: flex; align-items: center; gap: 10px; padding: 9px 13px; border-bottom: 1px solid rgba(245,240,232,0.12); }
+.prompt-block .pb-head .lbl { flex: 1; font-family: var(--label); font-weight: 700; font-size: 10.5px; letter-spacing: 0.8px; text-transform: uppercase; color: var(--gold-light); }
+.prompt-block .pb-copy { font-family: var(--label); font-weight: 700; font-size: 12px; color: var(--bg); background: rgba(245,240,232,0.14); border-radius: 5px; padding: 6px 11px; min-height: 34px; }
+.prompt-block .pb-copy:hover { background: rgba(245,240,232,0.24); }
+.prompt-block pre { margin: 0; padding: 14px; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; color: #e8e2d4; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow-y: auto; }
+
+.step-label { font-family: var(--label); font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--ink-light); margin: 18px 0 9px; display: flex; align-items: center; gap: 8px; }
+.step-label .num { width: 22px; height: 22px; border-radius: 50%; background: var(--ink); color: var(--bg); display: grid; place-items: center; font-size: 11px; flex: none; }
+
+/* path display (zettel) */
+.path-display { font-family: var(--mono); font-size: 14px; color: var(--ink); background: var(--bg); border: 1.5px dashed var(--border); border-radius: 6px; padding: 11px 13px; margin-top: -4px; }
+.path-display .ph { color: var(--ink-dim); }
+.path-display b { color: var(--gold); font-weight: 600; }
+
+/* memrise preview cards */
+.mcard { border: 1px solid var(--border); border-radius: 6px; padding: 13px 15px; margin-bottom: 10px; background: var(--bg); position: relative; }
+.mcard .mc-x { position: absolute; top: 8px; right: 9px; width: 28px; height: 28px; border-radius: 6px; display: grid; place-items: center; color: var(--ink-light); font-size: 18px; background: var(--surface-2); }
+.mcard .mc-x:hover { color: var(--red); }
+.mcard .mc-row { font-size: 13.5px; margin-bottom: 4px; font-family: var(--label); padding-right: 30px; }
+.mcard .mc-row .k { font-weight: 700; color: var(--ink-light); }
+.mcard .mc-row .v { color: var(--ink); }
+.parse-err { background: rgba(158,42,43,0.08); border: 1px solid rgba(158,42,43,0.3); color: var(--red); border-radius: 6px; padding: 11px 13px; font-size: 13px; font-family: var(--label); margin-bottom: 10px; }
+
+/* ============ TOASTS ============ */
+.toasts { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); z-index: 200; display: flex; flex-direction: column; gap: 10px; width: calc(100% - 36px); max-width: 460px; pointer-events: none; }
+.toast { background: var(--ink); border-radius: 7px; border-left: 4px solid var(--blue); padding: 13px 16px; font-size: 14px; color: var(--bg); font-family: var(--label); box-shadow: 0 12px 30px rgba(44,36,22,0.32); display: flex; align-items: center; gap: 10px; animation: slideUp .25s ease; pointer-events: auto; }
+.toast.ok { border-left-color: var(--green); }
+.toast.err { border-left-color: var(--red); }
+.toast.warn { border-left-color: var(--gold-light); }
+@keyframes slideUp { from { transform: translateY(16px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* ============ DRAWER ============ */
+.drawer-back { position: fixed; inset: 0; z-index: 60; background: rgba(44,36,22,0.4); display: none; }
+.drawer-back.open { display: block; }
+.drawer { position: fixed; top: 0; left: 0; bottom: 0; z-index: 61; width: 260px; max-width: 80vw; background: var(--bg-mid); border-right: 1px solid var(--border); padding: calc(env(safe-area-inset-top) + 22px) 16px 22px; transform: translateX(-100%); transition: transform .25s ease; display: flex; flex-direction: column; gap: 8px; }
+.drawer.open { transform: none; }
+.drawer .dtitle { font-family: var(--label); font-weight: 700; text-transform: uppercase; letter-spacing: 1px; font-size: 11px; color: var(--gold); margin-bottom: 16px; padding: 0 6px; }
+.drawer .nav-btn { justify-content: flex-start; }
+
+@media (max-width: 767px) {
+  .nav { display: none; }
+  .hamburger { display: flex; }
+  .brand-sub { display: none; }
+  .choices { grid-template-columns: 1fr; }
+}
+
+.loading-bar { position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: 300; background: linear-gradient(90deg, var(--gold), var(--rust), var(--gold)); background-size: 200% 100%; animation: load 1s linear infinite; display: none; }
+.loading-bar.on { display: block; }
+@keyframes load { from { background-position: 0 0; } to { background-position: 200% 0; } }
+</style>
+</head>
+<body>
+<div class="loading-bar" id="loadingBar"></div>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <button class="hamburger" id="hamburger" aria-label="Menü">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+    </button>
+    <div class="brand">
+      <div class="brand-mark">R</div>
+      <div>
+        <div class="brand-title">Readwise Inbox</div>
+        <div class="brand-sub">Highlights → Anki & Zettelkasten</div>
+      </div>
+    </div>
+    <nav class="nav" id="navDesktop">
+      <button class="nav-btn active" data-tab="inbox">Inbox <span class="nb-count" id="cntInbox">0</span></button>
+      <button class="nav-btn" data-tab="zettel">Zettelkasten <span class="nb-count" id="cntZettel">0</span></button>
+      <button class="nav-btn" data-tab="settings">Einstellungen</button>
+    </nav>
+  </div>
+</header>
+
+<div class="drawer-back" id="drawerBack"></div>
+<aside class="drawer" id="drawer">
+  <div class="dtitle">Navigation</div>
+  <button class="nav-btn active" data-tab="inbox">Inbox <span class="nb-count" id="cntInboxM">0</span></button>
+  <button class="nav-btn" data-tab="zettel">Zettelkasten <span class="nb-count" id="cntZettelM">0</span></button>
+  <button class="nav-btn" data-tab="settings">Einstellungen</button>
+</aside>
+
+<main class="wrap">
+  <!-- INBOX -->
+  <section class="tab active" id="tab-inbox">
+    <div class="tab-head">
+      <h2>📥 Inbox</h2>
+      <p>Entscheide pro Highlight: Karteikarte, Atomic Note oder Skip.</p>
+    </div>
+    <div class="feed" id="feed"></div>
+  </section>
+
+  <!-- ZETTELKASTEN -->
+  <section class="tab" id="tab-zettel">
+    <div class="tab-head">
+      <h2>🗂 Zettelkasten</h2>
+      <p>Deine Atomic Notes — lokal gespeichert.</p>
+    </div>
+    <div class="btn-row" style="margin-bottom:18px;">
+      <button class="btn rust" id="zExportTop">📦 Als Obsidian-ZIP exportieren</button>
+    </div>
+    <div id="zettelList"></div>
+  </section>
+
+  <!-- SETTINGS -->
+  <section class="tab" id="tab-settings">
+    <div class="tab-head">
+      <h2>⚙️ Einstellungen</h2>
+      <p>Tokens und Deck-Namen.</p>
+    </div>
+
+    <div class="panel">
+      <h3>Readwise</h3>
+      <div class="field">
+        <label for="rwToken">API Token</label>
+        <input type="password" id="rwToken" placeholder="Token aus readwise.io/access_token" autocomplete="off">
+        <div class="hint">Wird nur lokal im Browser gespeichert (localStorage), nie exportiert.</div>
+      </div>
+      <div class="btn-row">
+        <button class="btn gold" id="btnFetch">↓ Neue Highlights laden</button>
+        <span class="status-dot" id="rwStatus"><span class="d"></span><span class="txt">Bereit</span></span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>AnkiConnect</h3>
+      <div class="field">
+        <label for="masteryDeck">Mastery-Deck</label>
+        <input type="text" id="masteryDeck" placeholder="Mastery">
+      </div>
+      <div class="field">
+        <label for="memriseDeck">Memrise-Deck</label>
+        <input type="text" id="memriseDeck" placeholder="Memrise Inbox">
+      </div>
+      <div class="btn-row">
+        <button class="btn" id="btnAnkiTest">🔌 Verbindung testen</button>
+        <span class="status-dot" id="ankiStatus"><span class="d"></span><span class="txt">Nicht getestet</span></span>
+      </div>
+      <div class="hint" style="margin-top:12px;">Endpoint: http://localhost:8765 — Anki muss laufen, AnkiConnect-Plugin installiert.</div>
+    </div>
+
+    <div class="panel">
+      <h3>GitHub Gist Sync</h3>
+      <div class="field">
+        <label for="gistToken">GitHub Token</label>
+        <input type="password" id="gistToken" placeholder="ghp_…" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="gistId">Gist ID</label>
+        <input type="text" id="gistId" placeholder="optional">
+      </div>
+      <button class="btn ghost" id="btnGistSync" disabled>↑↓ Sync (Phase 2)</button>
+      <div class="phase2-note">Phase 2 — UI vorbereitet, Sync-Funktion folgt.</div>
+    </div>
+
+    <div class="panel">
+      <h3>Export</h3>
+      <div class="btn-row">
+        <button class="btn rust" id="btnZipExport">📦 Zettels als ZIP exportieren</button>
+      </div>
+      <div class="hint" style="margin-top:12px;">Jeder Zettel wird als Obsidian-kompatible .md-Datei mit YAML-Frontmatter exportiert.</div>
+    </div>
+  </section>
+</main>
+
+<!-- ===== TYPE CHOOSER MODAL ===== -->
+<div class="modal-back" id="typeModal">
+  <div class="modal narrow">
+    <div class="modal-head">
+      <h3>Welchen Kartentyp?</h3>
+      <button class="modal-x" data-close="typeModal">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="choices">
+        <button class="choice" id="chooseMastery">
+          <span class="ci">📖</span>
+          <span class="ct">Mastery Card</span>
+          <span class="cd">Frage + Antwort mit Zitat-Block. Direkt nach Anki.</span>
+        </button>
+        <button class="choice" id="chooseMemrise">
+          <span class="ci">🧠</span>
+          <span class="ct">Memrise Card</span>
+          <span class="cd">MC / Cloze / Tapping. KI-gestützt, mehrere Karten.</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== MASTERY MODAL ===== -->
+<div class="modal-back" id="masteryModal">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>📖 Mastery Card</h3>
+      <button class="modal-x" data-close="masteryModal">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label for="mFrage">Frage</label>
+        <textarea id="mFrage" placeholder="Frage die mit einem Satz beantwortet wird…"></textarea>
+      </div>
+      <div class="field">
+        <label for="mAntwort">Antwort</label>
+        <textarea id="mAntwort" placeholder="Kernaussage…"></textarea>
+      </div>
+
+      <details class="collapse" open>
+        <summary>Zitat <span class="chev">›</span></summary>
+        <div class="cbody"><div class="readonly-box" id="cZitat"></div></div>
+      </details>
+      <details class="collapse">
+        <summary>Notizen <span class="chev">›</span></summary>
+        <div class="cbody"><textarea id="cNotizen" placeholder="Eigene Notizen…"></textarea></div>
+      </details>
+      <details class="collapse">
+        <summary>Medien <span class="chev">›</span></summary>
+        <div class="cbody"><div class="readonly-box" id="cMedien"></div></div>
+      </details>
+      <div class="hint">Deck: <b id="masteryDeckLabel">Mastery</b></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" data-close="masteryModal">Abbrechen</button>
+      <button class="btn solid" id="btnSendAnki">An Anki senden →</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== MEMRISE MODAL ===== -->
+<div class="modal-back" id="memriseModal">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>🧠 Memrise Card</h3>
+      <button class="modal-x" data-close="memriseModal">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label>Sub-Typ</label>
+        <div class="seg" id="memSeg">
+          <button data-sub="mc" class="active">MC+Typing</button>
+          <button data-sub="tapping">Tapping</button>
+          <button data-sub="cloze">Cloze</button>
+        </div>
+      </div>
+
+      <div class="step-label"><span class="num">1</span> Prompt kopieren</div>
+      <div class="prompt-block">
+        <div class="pb-head">
+          <span class="lbl" id="promptLbl">Prompt für KI</span>
+          <button class="pb-copy" id="btnCopyPrompt">📋 Kopieren</button>
+        </div>
+        <pre id="promptText"></pre>
+      </div>
+
+      <div class="step-label"><span class="num">2</span> KI-Ergebnis (JSON) einfügen</div>
+      <textarea id="memResult" placeholder='[{"Learnable":"…","Definition":"…","Choices":"…","Attributes":"…","Extra":"…"}]' style="min-height:120px;font-family:var(--mono);font-size:13px;"></textarea>
+      <div class="btn-row" style="margin-top:10px;">
+        <button class="btn gold" id="btnParse">✓ Karten aus Ergebnis erstellen</button>
+      </div>
+
+      <div id="memPreview" style="margin-top:18px;"></div>
+      <div class="hint" id="memDeckHint" style="margin-top:6px;"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" data-close="memriseModal">Abbrechen</button>
+      <button class="btn solid" id="btnSendMemrise" disabled>An Anki senden →</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== ATOMIC NOTE (ZETTEL) MODAL ===== -->
+<div class="modal-back" id="noteModal">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>📝 Atomic Note</h3>
+      <button class="modal-x" data-close="noteModal">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field"><label for="zParent">Parent</label><input id="zParent" placeholder="z. B. 1a2 oder lernen" list="parentList"><datalist id="parentList"></datalist></div>
+      <div class="field"><label for="zKuerzel">Kürzel</label><input id="zKuerzel" placeholder="alphanumerisch — wird zu Dateiname"></div>
+      <div class="field" style="margin-bottom:18px;"><div class="path-display" id="zPath"></div></div>
+      <div class="field"><label for="zTitel">Titel</label><input id="zTitel"></div>
+      <div class="field"><label for="zSummary">Summary</label><input id="zSummary" placeholder="Ein Satz Zusammenfassung"></div>
+      <div class="field"><label for="zAnm">Anmerkung</label><textarea id="zAnm" placeholder="Eigene Gedanken…"></textarea></div>
+      <div class="field"><label for="zZitat">Zitat</label><textarea id="zZitat"></textarea></div>
+      <div class="field"><label for="zSrc">Quelle</label><input id="zSrc" readonly></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" data-close="noteModal">Abbrechen</button>
+      <button class="btn rust" id="btnSaveNote">Speichern</button>
+      <button class="btn gold" id="btnSaveNoteZip">+ Obsidian ZIP</button>
+    </div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script>
+"use strict";
+
+/* ============================================================
+   CONSTANTS
+   ============================================================ */
+var DB_NAME = 'readwise-inbox-v1';
+var DB_VERSION = 1;
+var STORES = ['highlights', 'cards', 'zettels', 'config'];
+var TOKEN_KEY = 'readwise-inbox-token';
+var GIST_TOKEN_KEY = 'readwise-inbox-gist-token';
+var ANKI_ENDPOINT = 'http://localhost:8765';
+var READWISE_API = 'https://readwise.io/api/v3/list/';
+
+var MODELS = {
+  mastery: 'Mastery-Notiztyp',
+  mc: 'Memrise (Lτ) Preset [Translation+Listenting | MultipleChoice+Typing] v5.1',
+  tapping: 'Memrise (Lτ) Preset [Translation+Listenting | MultipleChoice+Typing] v5.1',
+  cloze: 'Memrise (Lτ) Cloze Template v5.1'
+};
+
+var db = null;
+var config = null;
+var currentHighlightId = null;
+var memSubtype = 'mc';
+var memCards = [];
+
+/* ============================================================
+   INDEXEDDB WRAPPER  (unverändert)
+   ============================================================ */
+function openDB() {
+  return new Promise(function (resolve, reject) {
+    var req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = function (e) {
+      var d = e.target.result;
+      STORES.forEach(function (s) {
+        if (!d.objectStoreNames.contains(s)) d.createObjectStore(s, { keyPath: 'id' });
+      });
+    };
+    req.onsuccess = function () { resolve(req.result); };
+    req.onerror = function () { reject(req.error); };
+  });
+}
+function tx(store, mode) { return db.transaction(store, mode).objectStore(store); }
+function idbPut(store, val) {
+  return new Promise(function (res, rej) {
+    var r = tx(store, 'readwrite').put(val);
+    r.onsuccess = function () { res(val); };
+    r.onerror = function () { rej(r.error); };
+  });
+}
+function idbGet(store, key) {
+  return new Promise(function (res, rej) {
+    var r = tx(store, 'readonly').get(key);
+    r.onsuccess = function () { res(r.result); };
+    r.onerror = function () { rej(r.error); };
+  });
+}
+function idbAll(store) {
+  return new Promise(function (res, rej) {
+    var r = tx(store, 'readonly').getAll();
+    r.onsuccess = function () { res(r.result || []); };
+    r.onerror = function () { rej(r.error); };
+  });
+}
+
+/* ============================================================
+   CONFIG
+   ============================================================ */
+function defaultConfig() {
+  return {
+    id: 'singleton',
+    mastery_deck: 'Mastery',
+    memrise_deck: 'Memrise Inbox',
+    gist_id: '',
+    last_readwise_cursor: ''
+  };
+}
+function loadConfig() {
+  return idbGet('config', 'singleton').then(function (c) {
+    config = Object.assign(defaultConfig(), c || {});
+    config.id = 'singleton';
+    if (!config.mastery_deck) config.mastery_deck = 'Mastery';
+    if (!config.memrise_deck) config.memrise_deck = 'Memrise Inbox';
+    return idbPut('config', config);
+  });
+}
+function saveConfig() { return idbPut('config', config); }
+
+function getToken() { return localStorage.getItem(TOKEN_KEY) || ''; }
+function setToken(v) { localStorage.setItem(TOKEN_KEY, v); }
+function getGistToken() { return localStorage.getItem(GIST_TOKEN_KEY) || ''; }
+function setGistToken(v) { localStorage.setItem(GIST_TOKEN_KEY, v); }
+
+/* ============================================================
+   MOCK SEED  (unverändert)
+   ============================================================ */
+function nowISO() { return new Date().toISOString(); }
+
+var MOCK = [
+  { readwise_id: 90210001, text: 'The first principle is that you must not fool yourself — and you are the easiest person to fool.', note: 'Erinnert an Confirmation Bias. Vor jedem starken Glauben prüfen, ob ich mich selbst täusche.', source_title: 'Surely You\'re Joking, Mr. Feynman!', source_author: 'Richard P. Feynman', source_url: 'https://readwise.io/bookreview/feynman', source_cover: '', category: 'books' },
+  { readwise_id: 90210002, text: 'A complex system that works is invariably found to have evolved from a simple system that worked. A complex system designed from scratch never works and cannot be patched up to make it work. You have to start over, beginning with a working simple system.', note: '', source_title: 'Systemantics', source_author: 'John Gall', source_url: 'https://readwise.io/bookreview/systemantics', source_cover: '', category: 'books' },
+  { readwise_id: 90210003, text: 'We are what we repeatedly do. Excellence, then, is not an act, but a habit.', note: 'Gute Karte für tägliche Wiederholung — fragt nach der Quelle (oft Aristoteles zugeschrieben, eigentlich Will Durant).', source_title: 'The Story of Philosophy', source_author: 'Will Durant', source_url: 'https://readwise.io/bookreview/durant', source_cover: '', category: 'books' },
+  { readwise_id: 90210004, text: 'The best way to predict the future is to invent it.', note: '', source_title: 'Alan Kay at PARC', source_author: 'Alan Kay', source_url: 'https://readwise.io/articles/alankay', source_cover: '', category: 'articles' },
+  { readwise_id: 90210005, text: 'Spaced repetition is the deliberate use of the spacing effect: reviewing material at increasing intervals so that each review lands just before you would have forgotten. The cost is small and the payoff compounds — knowledge that would have evaporated becomes permanent at remarkably little ongoing effort.', note: 'Direkt relevant für diese App. Vielleicht eine Cloze-Karte: {{c1::spacing effect}}.', source_title: 'How to Remember Anything Forever-ish', source_author: 'Nicky Case', source_url: 'https://ncase.me/remember/', source_cover: '', category: 'articles' }
+];
+
+function buildHighlight(m) {
+  return {
+    id: 'rw_' + m.readwise_id, readwise_id: m.readwise_id, text: m.text, note: m.note || '',
+    source_title: m.source_title || '', source_author: m.source_author || '', source_url: m.source_url || '',
+    source_cover: m.source_cover || '', highlighted_at: m.highlighted_at || nowISO(), category: m.category || '',
+    readwise_url: m.readwise_url || ('https://readwise.io/highlights/' + m.readwise_id),
+    status: 'inbox', loadedAt: nowISO(), updatedAt: nowISO()
+  };
+}
+function seedIfEmpty() {
+  return idbAll('highlights').then(function (all) {
+    if (all.length > 0) return;
+    var chain = Promise.resolve();
+    MOCK.forEach(function (m) { chain = chain.then(function () { return idbPut('highlights', buildHighlight(m)); }); });
+    return chain;
+  });
+}
+
+/* ============================================================
+   UTIL
+   ============================================================ */
+function esc(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function slugify(s) {
+  return String(s || 'note').toLowerCase().trim().replace(/[^a-z0-9äöüß\s_-]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-').slice(0, 60) || 'note';
+}
+function byId(id) { return document.getElementById(id); }
+function loading(on) { byId('loadingBar').classList.toggle('on', on); }
+
+function toast(msg, type) {
+  var box = byId('toasts');
+  var el = document.createElement('div');
+  el.className = 'toast ' + (type || '');
+  el.textContent = msg;
+  box.appendChild(el);
+  setTimeout(function () {
+    el.style.transition = 'opacity .3s, transform .3s';
+    el.style.opacity = '0'; el.style.transform = 'translateY(10px)';
+    setTimeout(function () { el.remove(); }, 320);
+  }, 3800);
+}
+
+/* ============================================================
+   ANKICONNECT  (ankiRequest + buildMedienFeld unverändert)
+   ============================================================ */
+function ankiRequest(action, params) {
+  return fetch(ANKI_ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: action, version: 6, params: params || {} })
+  }).then(function (r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json().catch(function () { throw new Error('Ungültige AnkiConnect-Antwort'); });
+  });
+}
+function buildMedienFeld(h) {
+  var lines = [];
+  if (h.source_author) lines.push('Autor: ' + h.source_author);
+  if (h.source_title) lines.push('Full Title: ' + h.source_title);
+  if (h.category) lines.push('Category: ' + h.category);
+  if (h.source_url) lines.push('<a href="' + h.source_url + '">📚 Alle Highlights dieser Quelle</a>');
+  if (h.source_cover) lines.push('<img src="' + h.source_cover + '" style="max-width:120px">');
+  return lines.join('\n');
+}
+
+function ankiOfflineMsg(err) {
+  var m = String(err && err.message || err);
+  if (m.indexOf('Failed to fetch') >= 0 || m.indexOf('NetworkError') >= 0) return 'AnkiConnect nicht erreichbar — läuft Anki mit dem Plugin?';
+  return 'Anki-Fehler: ' + m;
+}
+
+/* ---- Mastery push ---- */
+function buildMasteryNote(h, fields, deck) {
+  return {
+    deckName: deck,
+    modelName: MODELS.mastery,
+    fields: {
+      Frage: fields.frage,
+      Antwort: fields.antwort,
+      Zitat: '„' + h.text + '" (' + h.source_author + ', ' + h.source_title + ') <a href="' + h.readwise_url + '">📖 Readwise</a>',
+      Notizen: fields.notizen || h.note || '',
+      Medien: buildMedienFeld(h)
+    },
+    tags: ['readwise-inbox']
+  };
+}
+
+function pushMastery(h, fields) {
+  var deck = config.mastery_deck || 'Mastery';
+  loading(true);
+  return ankiRequest('version').then(function () {
+    return ankiRequest('addNote', { note: buildMasteryNote(h, fields, deck) });
+  }).then(function (resp) {
+    if (resp && resp.error) throw new Error(resp.error);
+    var card = { id: 'card_' + Date.now(), highlight_id: h.id, template: 'mastery', fields: fields, deck: deck, anki_note_id: resp ? resp.result : null, pushed_at: nowISO(), createdAt: nowISO() };
+    return idbPut('cards', card).then(function () { return markProcessed(h.id); });
+  }).then(function () {
+    loading(false);
+    toast('✓ Mastery Card an Anki gesendet (Deck: ' + deck + ')', 'ok');
+    closeModal('masteryModal');
+    return renderAll();
+  }).catch(function (err) { loading(false); toast(ankiOfflineMsg(err), 'err'); });
+}
+
+/* ---- Memrise notes ---- */
+function buildMemriseNote(h, subtype, obj, deck) {
+  var rw = '<a href="' + h.readwise_url + '">📖 Readwise</a>';
+  if (subtype === 'cloze') {
+    return {
+      deckName: deck, modelName: MODELS.cloze,
+      fields: { Text: obj.text, Choices: obj.choices || '', Attributes: obj.attributes || '', Extra: obj.extra || '', 'Extra 2': rw, Audio: '', Mems: '' },
+      tags: ['readwise-inbox']
+    };
+  }
+  // mc + tapping share the MultipleChoice+Typing preset
+  return {
+    deckName: deck, modelName: subtype === 'tapping' ? MODELS.tapping : MODELS.mc,
+    fields: { Learnable: obj.learnable, Definition: obj.definition || '', Choices: obj.choices || '', Attributes: obj.attributes || '', Extra: obj.extra || '', 'Extra 2': rw, Audio: '', Mems: '' },
+    tags: ['readwise-inbox']
+  };
+}
+
+function pushMemrise(h, subtype, cards) {
+  var deck = config.memrise_deck || 'Memrise Inbox';
+  loading(true);
+  return ankiRequest('version').then(function () {
+    var notes = cards.map(function (c) { return buildMemriseNote(h, subtype, c, deck); });
+    return ankiRequest('addNotes', { notes: notes });
+  }).then(function (resp) {
+    if (resp && resp.error) throw new Error(resp.error);
+    var ids = resp && resp.result ? resp.result : [];
+    var ok = ids.filter(function (x) { return x != null; }).length;
+    var chain = Promise.resolve();
+    cards.forEach(function (c, i) {
+      chain = chain.then(function () {
+        return idbPut('cards', { id: 'card_' + Date.now() + '_' + i, highlight_id: h.id, template: subtype, fields: c, deck: deck, anki_note_id: ids[i] || null, pushed_at: nowISO(), createdAt: nowISO() });
+      });
+    });
+    return chain.then(function () { return markProcessed(h.id); }).then(function () { return ok; });
+  }).then(function (ok) {
+    loading(false);
+    toast('✓ ' + ok + ' Memrise-Karte(n) an Anki gesendet (Deck: ' + deck + ')', 'ok');
+    closeModal('memriseModal');
+    return renderAll();
+  }).catch(function (err) { loading(false); toast(ankiOfflineMsg(err), 'err'); });
+}
+
+/* ============================================================
+   STATUS (idempotent)
+   ============================================================ */
+function markProcessed(id) { return setStatus(id, 'processed'); }
+function setStatus(id, status) {
+  return idbGet('highlights', id).then(function (h) {
+    if (!h) return;
+    if (h.status === 'processed' || h.status === 'skipped') return;
+    h.status = status; h.updatedAt = nowISO();
+    return idbPut('highlights', h);
+  });
+}
+
+/* ============================================================
+   READWISE FETCH  (Logik unverändert)
+   ============================================================ */
+function mapReadwise(r) {
+  return {
+    id: 'rw_' + r.id, readwise_id: r.id, text: r.content || r.text || '', note: r.note || '',
+    source_title: r.title || '', source_author: r.author || '', source_url: r.source_url || '',
+    source_cover: r.cover_image_url || '', highlighted_at: r.highlighted_at || nowISO(), category: r.category || '',
+    readwise_url: r.url || '', status: 'inbox', loadedAt: nowISO(), updatedAt: nowISO()
+  };
+}
+function fetchReadwise() {
+  var token = getToken();
+  if (!token) { toast('Bitte Readwise-Token in den Einstellungen eintragen.', 'warn'); return Promise.resolve(); }
+  setStatusDot('rwStatus', '', 'Lade…');
+  loading(true);
+  var added = 0;
+  var cursor = config.last_readwise_cursor || '';
+  function page(cur) {
+    var url = READWISE_API + '?category=highlight' + (cur ? '&pageCursor=' + encodeURIComponent(cur) : '');
+    return fetch(url, { headers: { Authorization: 'Token ' + token } }).then(function (r) {
+      if (r.status === 401) throw new Error('401 — Token ungültig');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function (data) {
+      var results = data.results || [];
+      var chain = Promise.resolve();
+      results.forEach(function (raw) {
+        chain = chain.then(function () {
+          return idbGet('highlights', 'rw_' + raw.id).then(function (existing) {
+            if (existing) return;
+            added++; return idbPut('highlights', mapReadwise(raw));
+          });
+        });
+      });
+      return chain.then(function () {
+        config.last_readwise_cursor = data.nextPageCursor || '';
+        return saveConfig().then(function () { return data.nextPageCursor ? data.nextPageCursor : null; });
+      });
+    });
+  }
+  return page(cursor).then(function (next) {
+    loading(false);
+    setStatusDot('rwStatus', 'ok', added + ' neu');
+    if (added > 0) toast('✓ ' + added + ' neue Highlights geladen.', 'ok');
+    else toast('Keine neuen Highlights' + (next ? ' auf dieser Seite — erneut klicken für mehr.' : '.'), 'warn');
+    return renderAll();
+  }).catch(function (err) {
+    loading(false);
+    var m = String(err && err.message || err);
+    setStatusDot('rwStatus', 'bad', 'Fehler');
+    if (m.indexOf('Failed to fetch') >= 0) toast('Readwise nicht erreichbar (CORS/Netz). Token & Verbindung prüfen.', 'err');
+    else toast('Readwise-Fehler: ' + m, 'err');
+  });
+}
+function setStatusDot(id, cls, txt) {
+  var el = byId(id);
+  el.className = 'status-dot ' + (cls || '');
+  el.querySelector('.txt').textContent = txt;
+}
+
+/* ============================================================
+   RENDER INBOX
+   ============================================================ */
+function statusPill(status) {
+  if (status === 'processed') return '<span class="pill done">✓ Done</span>';
+  if (status === 'skipped') return '<span class="pill skip">Übersprungen</span>';
+  return '<span class="pill inbox">Inbox ▸</span>';
+}
+function renderInbox(highlights) {
+  var feed = byId('feed');
+  feed.innerHTML = '';
+  highlights.sort(function (a, b) {
+    var ra = a.status === 'inbox' ? 0 : 1, rb = b.status === 'inbox' ? 0 : 1;
+    if (ra !== rb) return ra - rb;
+    return (b.highlighted_at || '').localeCompare(a.highlighted_at || '');
+  });
+  if (highlights.length === 0) {
+    feed.innerHTML = '<div class="empty"><div class="big">✨</div><h3>Inbox leer</h3><p>Keine Highlights vorhanden.</p><button class="btn gold" onclick="goTab(\'settings\')">↓ Highlights laden</button></div>';
+    return;
+  }
+  var inboxCount = highlights.filter(function (h) { return h.status === 'inbox'; }).length;
+  if (inboxCount === 0) {
+    var done = document.createElement('div');
+    done.className = 'empty';
+    done.innerHTML = '<div class="big">✨</div><h3>Inbox leer — alle Highlights verarbeitet.</h3><p>Gut gemacht. Verarbeitete Karten siehst du unten.</p><button class="btn gold" id="reloadBtn">↻ Neue Highlights laden</button>';
+    feed.appendChild(done);
+    var rb = done.querySelector('#reloadBtn');
+    if (rb) rb.addEventListener('click', fetchReadwise);
+  }
+  highlights.forEach(function (h) { feed.appendChild(buildCard(h)); });
+  setupClamps();
+}
+function buildCard(h) {
+  var card = document.createElement('article');
+  card.className = 'hl-card' + (h.status === 'processed' ? ' done' : h.status === 'skipped' ? ' skipped' : '');
+  card.dataset.id = h.id;
+  var noteHtml = h.note ? '<div class="hl-note"><span class="ic">💬</span><span>' + esc(h.note) + '</span></div>' : '';
+  var disabled = h.status !== 'inbox' ? 'disabled' : '';
+  card.innerHTML =
+    '<div class="hl-top">' +
+      '<div class="hl-src"><span class="t">' + esc(h.source_title || 'Ohne Titel') + '</span>' +
+        (h.source_author ? '<div class="a">' + esc(h.source_author) + '</div>' : '') +
+      '</div>' + statusPill(h.status) +
+    '</div>' +
+    '<div class="hl-text clamped"><span class="qm">„</span>' + esc(h.text) + '<span class="qm">"</span></div>' +
+    '<span class="hl-more">… mehr anzeigen</span>' +
+    noteHtml +
+    '<div class="hl-actions">' +
+      '<button class="act primary" data-act="card" ' + disabled + '>🃏 Karteikarte</button>' +
+      '<button class="act secondary" data-act="note" ' + disabled + '>📝 Atomic Note</button>' +
+      '<button class="act" data-act="skip" ' + disabled + '>⏭ Skip</button>' +
+    '</div>';
+  var more = card.querySelector('.hl-more');
+  more.addEventListener('click', function () {
+    var t = card.querySelector('.hl-text');
+    var open = t.classList.toggle('clamped') === false;
+    more.textContent = open ? 'weniger anzeigen' : '… mehr anzeigen';
+  });
+  if (h.status === 'inbox') {
+    card.querySelector('[data-act="card"]').addEventListener('click', function () { openTypeChooser(h); });
+    card.querySelector('[data-act="note"]').addEventListener('click', function () { openNoteModal(h); });
+    card.querySelector('[data-act="skip"]').addEventListener('click', function () { doSkip(h); });
+  }
+  return card;
+}
+function setupClamps() {
+  document.querySelectorAll('.hl-card').forEach(function (card) {
+    var t = card.querySelector('.hl-text');
+    var more = card.querySelector('.hl-more');
+    if (t.scrollHeight - t.clientHeight > 4) more.classList.add('show');
+  });
+}
+function doSkip(h) { setStatus(h.id, 'skipped').then(function () { toast('Übersprungen.', 'warn'); return renderAll(); }); }
+
+/* ============================================================
+   STEP A — TYPE CHOOSER
+   ============================================================ */
+function openTypeChooser(h) {
+  currentHighlightId = h.id;
+  openModal('typeModal');
+}
+
+/* ============================================================
+   MASTERY MODAL
+   ============================================================ */
+function suggestFrage(h) {
+  var who = h.source_author || h.source_title || 'die Quelle';
+  return 'Was sagt ' + who + ' über das Kernkonzept dieses Highlights?';
+}
+function openMasteryModal(h) {
+  byId('mFrage').value = suggestFrage(h);
+  byId('mAntwort').value = h.text;
+  byId('masteryDeckLabel').textContent = config.mastery_deck || 'Mastery';
+  byId('cZitat').innerHTML = '<div class="quote">„' + esc(h.text) + '"</div>' +
+    '<div>(' + esc(h.source_author || '?') + ', ' + esc(h.source_title || '?') + ') ' +
+    (h.readwise_url ? '<a href="' + esc(h.readwise_url) + '" target="_blank" rel="noopener">📖 Readwise →</a>' : '') + '</div>';
+  byId('cNotizen').value = h.note || '';
+  var med = [];
+  if (h.source_author) med.push('Autor: ' + esc(h.source_author));
+  if (h.source_title) med.push('Titel: ' + esc(h.source_title));
+  if (h.category) med.push('Kategorie: ' + esc(h.category));
+  var medHtml = med.join(' &nbsp;|&nbsp; ');
+  if (h.source_url) medHtml += '<br><a href="' + esc(h.source_url) + '" target="_blank" rel="noopener">📚 Alle Highlights dieser Quelle →</a>';
+  if (h.source_cover) medHtml += '<img class="cover-thumb" src="' + esc(h.source_cover) + '" alt="cover">';
+  byId('cMedien').innerHTML = medHtml || '—';
+  openModal('masteryModal');
+}
+function sendMastery() {
+  idbGet('highlights', currentHighlightId).then(function (h) {
+    if (!h) return;
+    var fields = { frage: byId('mFrage').value.trim(), antwort: byId('mAntwort').value.trim(), notizen: byId('cNotizen').value.trim() };
+    if (!fields.frage || !fields.antwort) { toast('Frage und Antwort ausfüllen.', 'warn'); return; }
+    pushMastery(h, fields);
+  });
+}
+
+/* ============================================================
+   MEMRISE MODAL  (HITL)
+   ============================================================ */
+function buildMemrisePrompt(h, subtype) {
+  var base = 'Highlight:\n"' + h.text + '"\nQuelle: ' + h.source_author + ' — ' + h.source_title + '\n\n';
+  if (subtype === 'mc') {
+    return base + 'Erstelle eine MC+Typing Anki-Karte im Format:\nLearnable: [Begriff]\nDefinition: [Frage]\nChoices: [richtig|falsch1|falsch2|falsch3]\nAttributes: [Thema]\nExtra: [Erklärung]\n\nNur JSON, kein Fließtext.';
+  }
+  if (subtype === 'tapping') {
+    return base + 'Erstelle eine Tapping+Typing Anki-Karte im Format:\nLearnable Sentence: [vollständiger Satz]\nDefinition: [Frage]\nChoices: [Satz korrekt|Variante1|Variante2]\nAttributes: [Thema]\nExtra: [Erklärung]\n\nNur JSON, kein Fließtext.';
+  }
+  if (subtype === 'cloze') {
+    return base + 'Erstelle eine Cloze Anki-Karte im Format:\nText: [Satz mit {{c1::Lücke}}]\nChoices: [richtig|falsch1|falsch2]\nAttributes: [Thema]\nExtra: [Erklärung]\n\nNur JSON, kein Fließtext.';
+  }
+}
+function openMemriseModal(h) {
+  memSubtype = 'mc';
+  memCards = [];
+  document.querySelectorAll('#memSeg button').forEach(function (b) { b.classList.toggle('active', b.dataset.sub === 'mc'); });
+  byId('memResult').value = '';
+  byId('memPreview').innerHTML = '';
+  byId('btnSendMemrise').disabled = true;
+  byId('memDeckHint').textContent = 'Ziel-Deck: ' + (config.memrise_deck || 'Memrise Inbox');
+  refreshPrompt(h);
+  openModal('memriseModal');
+}
+function refreshPrompt(h) {
+  var labels = { mc: 'Prompt für KI — Memrise MC+Typing', tapping: 'Prompt für KI — Memrise Tapping+Typing', cloze: 'Prompt für KI — Memrise Cloze' };
+  byId('promptLbl').textContent = labels[memSubtype];
+  byId('promptText').textContent = buildMemrisePrompt(h, memSubtype);
+}
+function normalizeKeys(obj) {
+  var out = {};
+  Object.keys(obj).forEach(function (k) {
+    var nk = k.toLowerCase().trim();
+    if (nk === 'learnable sentence') nk = 'learnable';
+    if (nk === 'text' || nk === 'cloze') nk = 'text';
+    out[nk] = typeof obj[k] === 'string' ? obj[k] : String(obj[k]);
+  });
+  return out;
+}
+function parseMemriseResult() {
+  var raw = byId('memResult').value.trim();
+  byId('memPreview').innerHTML = '';
+  byId('btnSendMemrise').disabled = true;
+  memCards = [];
+  if (!raw) { toast('Bitte zuerst das KI-Ergebnis einfügen.', 'warn'); return; }
+  var txt = raw.replace(/```json/gi, '').replace(/```/g, '').trim();
+  // grab first {...} or [...] block
+  var first = txt.search(/[\[{]/);
+  if (first > 0) txt = txt.slice(first);
+  var data;
+  try { data = JSON.parse(txt); }
+  catch (e) {
+    byId('memPreview').innerHTML = '<div class="parse-err">JSON konnte nicht gelesen werden: ' + esc(e.message) + '. Stelle sicher, dass die KI reines JSON zurückgibt.</div>';
+    return;
+  }
+  var arr = Array.isArray(data) ? data : [data];
+  var valid = [];
+  arr.forEach(function (o) {
+    if (!o || typeof o !== 'object') return;
+    var n = normalizeKeys(o);
+    if (memSubtype === 'cloze') {
+      if (n.text && n.text.indexOf('{{c') >= 0) valid.push(n);
+    } else {
+      if (n.learnable) valid.push(n);
+    }
+  });
+  if (valid.length === 0) {
+    byId('memPreview').innerHTML = '<div class="parse-err">Keine gültigen Karten gefunden. Erwartet: ' + (memSubtype === 'cloze' ? '"Text" mit {{c1::…}}' : '"Learnable" je Karte') + '.</div>';
+    return;
+  }
+  memCards = valid;
+  renderMemPreview();
+  byId('btnSendMemrise').disabled = false;
+  toast('✓ ' + valid.length + ' Karte(n) erkannt.', 'ok');
+}
+function renderMemPreview() {
+  var box = byId('memPreview');
+  box.innerHTML = '<div class="step-label"><span class="num">3</span> Vorschau (' + memCards.length + ')</div>';
+  memCards.forEach(function (c, idx) {
+    var el = document.createElement('div');
+    el.className = 'mcard';
+    var rows = '';
+    var order = memSubtype === 'cloze' ? ['text', 'choices', 'attributes', 'extra'] : ['learnable', 'definition', 'choices', 'attributes', 'extra'];
+    order.forEach(function (k) {
+      if (c[k]) rows += '<div class="mc-row"><span class="k">' + k + ':</span> <span class="v">' + esc(c[k]) + '</span></div>';
+    });
+    el.innerHTML = rows + '<button class="mc-x" data-i="' + idx + '">×</button>';
+    el.querySelector('.mc-x').addEventListener('click', function () {
+      memCards.splice(idx, 1);
+      if (memCards.length === 0) { byId('memPreview').innerHTML = ''; byId('btnSendMemrise').disabled = true; }
+      else renderMemPreview();
+    });
+    box.appendChild(el);
+  });
+}
+function sendMemrise() {
+  if (memCards.length === 0) { toast('Keine Karten zum Senden.', 'warn'); return; }
+  idbGet('highlights', currentHighlightId).then(function (h) {
+    if (!h) return;
+    pushMemrise(h, memSubtype, memCards);
+  });
+}
+
+/* ============================================================
+   ATOMIC NOTE (ZETTEL) MODAL
+   ============================================================ */
+function updatePath() {
+  var p = byId('zParent').value.trim();
+  var k = byId('zKuerzel').value.trim();
+  var el = byId('zPath');
+  if (!p && !k) { el.innerHTML = '<span class="ph">parent.kürzel — wird zum Pfad / Dateinamen</span>'; return; }
+  el.innerHTML = (p ? esc(p) : '<span class="ph">parent</span>') + '<span class="ph">.</span>' + (k ? '<b>' + esc(k) + '</b>' : '<span class="ph">kürzel</span>');
+}
+function openNoteModal(h) {
+  currentHighlightId = h.id;
+  byId('zParent').value = '';
+  var firstWords = h.text.split(/\s+/).slice(0, 4).join(' ').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  byId('zKuerzel').value = firstWords.slice(0, 24);
+  byId('zTitel').value = (h.source_author ? h.source_author + ' — ' : '') + h.text.split(/\s+/).slice(0, 6).join(' ') + (h.text.split(/\s+/).length > 6 ? '…' : '');
+  byId('zSummary').value = '';
+  byId('zAnm').value = h.note || '';
+  byId('zZitat').value = h.text;
+  byId('zSrc').value = (h.source_author || '?') + ': ' + (h.source_title || '?');
+  updatePath();
+  refreshParentList();
+  openModal('noteModal');
+}
+function refreshParentList() {
+  idbAll('zettels').then(function (zs) {
+    var seen = {}, opts = '';
+    zs.forEach(function (z) { if (z.p && !seen[z.p]) { seen[z.p] = 1; opts += '<option value="' + esc(z.p) + '">'; } });
+    byId('parentList').innerHTML = opts;
+  });
+}
+function buildZettelFromModal(h) {
+  return {
+    id: 'zettel_' + Date.now(),
+    highlight_id: h.id,
+    p: byId('zParent').value.trim(),
+    k: byId('zKuerzel').value.trim(),
+    t: byId('zTitel').value.trim() || 'Ohne Titel',
+    q: byId('zZitat').value.trim(),
+    n: byId('zAnm').value.trim(),
+    s: byId('zSummary').value.trim(),
+    source_ref: (h.source_author || '?') + ': ' + (h.source_title || '?'),
+    readwise_url: h.readwise_url || '',
+    obsidian_exported: false,
+    createdAt: nowISO()
+  };
+}
+function saveNote(alsoZip) {
+  idbGet('highlights', currentHighlightId).then(function (h) {
+    if (!h) return;
+    var z = buildZettelFromModal(h);
+    if (!z.t) { toast('Titel ausfüllen.', 'warn'); return; }
+    return idbPut('zettels', z).then(function () { return markProcessed(h.id); })
+      .then(function () {
+        toast('✓ Atomic Note gespeichert.', 'ok');
+        closeModal('noteModal');
+        return renderAll();
+      }).then(function () { if (alsoZip) return exportZip(); });
+  });
+}
+
+/* ============================================================
+   ZETTELKASTEN RENDER
+   ============================================================ */
+function renderZettels(zettels) {
+  var list = byId('zettelList');
+  list.innerHTML = '';
+  if (zettels.length === 0) {
+    list.innerHTML = '<div class="empty"><div class="big">🗂</div><h3>Noch keine Notizen</h3><p>Erstelle Atomic Notes aus deinen Highlights in der Inbox.</p></div>';
+    byId('zExportTop').style.display = 'none';
+    return;
+  }
+  byId('zExportTop').style.display = '';
+  zettels.sort(function (a, b) { return (b.createdAt || '').localeCompare(a.createdAt || ''); });
+  zettels.forEach(function (z) {
+    var el = document.createElement('div');
+    el.className = 'zettel';
+    var path = (z.p || '') + (z.p && z.k ? '.' : '') + (z.k || '');
+    el.innerHTML =
+      (path ? '<div class="zpath">' + esc(path) + '</div>' : '') +
+      '<h4>' + esc(z.t || 'Ohne Titel') + '</h4>' +
+      (z.s ? '<div class="zsum">' + esc(z.s) + '</div>' : '') +
+      (z.n ? '<div class="zanm">' + esc(z.n) + '</div>' : '') +
+      (z.q ? '<div class="zquote">„' + esc(z.q) + '"</div>' : '') +
+      '<div class="zmeta"><span class="tag">📖 ' + esc(z.source_ref || '') + '</span>' +
+        (z.obsidian_exported ? '<span class="tag" style="color:var(--green);">✓ exportiert</span>' : '') +
+      '</div>';
+    list.appendChild(el);
+  });
+}
+
+/* ============================================================
+   OBSIDIAN ZIP EXPORT
+   ============================================================ */
+function zettelMarkdown(z) {
+  var md = '';
+  md += '---\n';
+  md += 'title: "' + (z.t || '').replace(/"/g, '\\"') + '"\n';
+  md += 'type: zettel\n';
+  md += '---\n';
+  md += '# ' + (z.t || '') + '\n\n';
+  md += '> [!abstract] Zusammenfassung\n';
+  md += '> ' + (z.s || '').replace(/\n/g, '\n> ') + '\n\n';
+  md += '## 📝 Anmerkung\n';
+  md += (z.n || '') + '\n\n';
+  md += '## 📖 Quelle\n';
+  md += (z.q || '') + '\n';
+  if (z.readwise_url) md += '[📖 Original in Readwise](' + z.readwise_url + ')\n';
+  return md;
+}
+function exportZip() {
+  if (typeof JSZip === 'undefined') { toast('JSZip nicht geladen.', 'err'); return Promise.resolve(); }
+  loading(true);
+  return idbAll('zettels').then(function (zettels) {
+    if (zettels.length === 0) { loading(false); toast('Keine Zettel zum Exportieren.', 'warn'); return; }
+    var zip = new JSZip();
+    var usedNames = {};
+    var chain = Promise.resolve();
+    zettels.forEach(function (z) {
+      var base = z.k ? slugify(z.k) : slugify(z.t);
+      var name = base;
+      while (usedNames[name]) { name = name + '-1'; }
+      usedNames[name] = 1;
+      zip.file(name + '.md', zettelMarkdown(z));
+      if (!z.obsidian_exported) { z.obsidian_exported = true; chain = chain.then(function () { return idbPut('zettels', z); }); }
+    });
+    return chain.then(function () { return zip.generateAsync({ type: 'blob' }); }).then(function (blob) {
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url; a.download = 'readwise-zettels.zip';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+      loading(false);
+      toast('✓ ' + zettels.length + ' Zettel als ZIP exportiert.', 'ok');
+      return renderAll();
+    });
+  }).catch(function (err) { loading(false); toast('Export-Fehler: ' + (err && err.message || err), 'err'); });
+}
+
+/* ============================================================
+   RENDER ALL + COUNTS
+   ============================================================ */
+function renderAll() {
+  return Promise.all([idbAll('highlights'), idbAll('zettels')]).then(function (res) {
+    var highlights = res[0], zettels = res[1];
+    renderInbox(highlights.slice());
+    renderZettels(zettels.slice());
+    var inboxCount = highlights.filter(function (h) { return h.status === 'inbox'; }).length;
+    byId('cntInbox').textContent = inboxCount;
+    byId('cntInboxM').textContent = inboxCount;
+    byId('cntZettel').textContent = zettels.length;
+    byId('cntZettelM').textContent = zettels.length;
+  });
+}
+
+/* ============================================================
+   MODAL / NAV HELPERS
+   ============================================================ */
+function openModal(id) { byId(id).classList.add('open'); document.body.style.overflow = 'hidden'; }
+function closeModal(id) {
+  byId(id).classList.remove('open');
+  if (!document.querySelector('.modal-back.open')) document.body.style.overflow = '';
+}
+function goTab(tab) {
+  document.querySelectorAll('.tab').forEach(function (t) { t.classList.toggle('active', t.id === 'tab-' + tab); });
+  document.querySelectorAll('.nav-btn').forEach(function (b) { b.classList.toggle('active', b.dataset.tab === tab); });
+  closeDrawer();
+  window.scrollTo({ top: 0 });
+}
+window.goTab = goTab;
+function openDrawer() { byId('drawer').classList.add('open'); byId('drawerBack').classList.add('open'); }
+function closeDrawer() { byId('drawer').classList.remove('open'); byId('drawerBack').classList.remove('open'); }
+
+/* ============================================================
+   WIRE UP
+   ============================================================ */
+function withCurrentHighlight(fn) { idbGet('highlights', currentHighlightId).then(function (h) { if (h) fn(h); }); }
+
+function wireEvents() {
+  document.querySelectorAll('.nav-btn').forEach(function (b) { b.addEventListener('click', function () { goTab(b.dataset.tab); }); });
+  byId('hamburger').addEventListener('click', openDrawer);
+  byId('drawerBack').addEventListener('click', closeDrawer);
+
+  document.querySelectorAll('[data-close]').forEach(function (b) { b.addEventListener('click', function () { closeModal(b.dataset.close); }); });
+  ['typeModal', 'masteryModal', 'memriseModal', 'noteModal'].forEach(function (id) {
+    byId(id).addEventListener('click', function (e) { if (e.target === byId(id)) closeModal(id); });
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { ['typeModal', 'masteryModal', 'memriseModal', 'noteModal'].forEach(closeModal); closeDrawer(); }
+  });
+
+  // type chooser
+  byId('chooseMastery').addEventListener('click', function () { closeModal('typeModal'); withCurrentHighlight(openMasteryModal); });
+  byId('chooseMemrise').addEventListener('click', function () { closeModal('typeModal'); withCurrentHighlight(openMemriseModal); });
+
+  // mastery
+  byId('btnSendAnki').addEventListener('click', sendMastery);
+
+  // memrise
+  document.querySelectorAll('#memSeg button').forEach(function (b) {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('#memSeg button').forEach(function (x) { x.classList.remove('active'); });
+      b.classList.add('active');
+      memSubtype = b.dataset.sub;
+      byId('memPreview').innerHTML = ''; byId('btnSendMemrise').disabled = true; memCards = [];
+      withCurrentHighlight(refreshPrompt);
+    });
+  });
+  byId('btnCopyPrompt').addEventListener('click', function () {
+    var txt = byId('promptText').textContent;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(txt).then(function () { toast('📋 Prompt kopiert.', 'ok'); }).catch(function () { fallbackCopy(txt); });
+    } else fallbackCopy(txt);
+  });
+  byId('btnParse').addEventListener('click', parseMemriseResult);
+  byId('btnSendMemrise').addEventListener('click', sendMemrise);
+
+  // note / zettel
+  byId('zParent').addEventListener('input', updatePath);
+  byId('zKuerzel').addEventListener('input', updatePath);
+  byId('btnSaveNote').addEventListener('click', function () { saveNote(false); });
+  byId('btnSaveNoteZip').addEventListener('click', function () { saveNote(true); });
+
+  // settings
+  var rw = byId('rwToken'); rw.value = getToken();
+  rw.addEventListener('change', function () { setToken(rw.value.trim()); toast('Token gespeichert.', 'ok'); });
+  var gt = byId('gistToken'); gt.value = getGistToken();
+  gt.addEventListener('change', function () { setGistToken(gt.value.trim()); });
+  var gi = byId('gistId'); gi.value = config.gist_id || '';
+  gi.addEventListener('change', function () { config.gist_id = gi.value.trim(); saveConfig(); });
+
+  var md = byId('masteryDeck'); md.value = config.mastery_deck;
+  md.addEventListener('change', function () { config.mastery_deck = md.value.trim() || 'Mastery'; saveConfig(); });
+  var me = byId('memriseDeck'); me.value = config.memrise_deck;
+  me.addEventListener('change', function () { config.memrise_deck = me.value.trim() || 'Memrise Inbox'; saveConfig(); });
+
+  byId('btnFetch').addEventListener('click', fetchReadwise);
+  byId('btnZipExport').addEventListener('click', exportZip);
+  byId('zExportTop').addEventListener('click', exportZip);
+
+  byId('btnAnkiTest').addEventListener('click', function () {
+    setStatusDot('ankiStatus', '', 'Teste…');
+    loading(true);
+    ankiRequest('version').then(function (resp) {
+      loading(false);
+      setStatusDot('ankiStatus', 'ok', 'Verbunden (v' + (resp && resp.result) + ')');
+      toast('✓ AnkiConnect erreichbar.', 'ok');
+    }).catch(function () {
+      loading(false);
+      setStatusDot('ankiStatus', 'bad', 'Nicht erreichbar');
+      toast('AnkiConnect nicht erreichbar — Anki + Plugin prüfen.', 'err');
+    });
+  });
+  byId('btnGistSync').addEventListener('click', function () { toast('Gist-Sync kommt in Phase 2.', 'warn'); });
+}
+
+function fallbackCopy(txt) {
+  var ta = document.createElement('textarea');
+  ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.select();
+  try { document.execCommand('copy'); toast('📋 Prompt kopiert.', 'ok'); } catch (e) { toast('Kopieren nicht möglich.', 'err'); }
+  ta.remove();
+}
+
+/* ============================================================
+   BOOT
+   ============================================================ */
+function boot() {
+  openDB().then(function (d) { db = d; return loadConfig(); })
+    .then(function () { return seedIfEmpty(); })
+    .then(function () { wireEvents(); return renderAll(); })
+    .catch(function (err) { console.error(err); toast('Initialisierung fehlgeschlagen: ' + (err && err.message || err), 'err'); });
+}
+boot();
+</script>
+</body>
+</html>
