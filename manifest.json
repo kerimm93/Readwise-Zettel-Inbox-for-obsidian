@@ -1,0 +1,10 @@
+{
+  "id": "readwise-inbox",
+  "name": "Readwise Inbox",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Process Readwise highlights into Anki mastery cards, atomic notes, or skipped inbox items.",
+  "author": "Readwise Inbox",
+  "authorUrl": "",
+  "isDesktopOnly": false
+}

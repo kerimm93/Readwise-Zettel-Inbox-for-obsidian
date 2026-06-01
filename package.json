@@ -1,0 +1,22 @@
+{
+  "name": "readwise-inbox-obsidian",
+  "version": "0.1.0",
+  "description": "Readwise Inbox Obsidian plugin bootstrap.",
+  "main": "main.js",
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "dev": "node esbuild.config.mjs --watch"
+  },
+  "keywords": [
+    "obsidian",
+    "readwise",
+    "anki"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "obsidian": "^1.5.12",
+    "typescript": "^5.4.3"
+  }
+}

@@ -1,0 +1,145 @@
+.rwi-view {
+  --rwi-bg: #f5f0e8;
+  --rwi-surface: #faf7f2;
+  --rwi-surface-2: #f0ead8;
+  --rwi-border: #c8bfa8;
+  --rwi-ink: #2c2416;
+  --rwi-muted: #6b5d4a;
+  --rwi-gold: #b8860b;
+  --rwi-rust: #8b3a2a;
+  background: var(--rwi-bg);
+  color: var(--rwi-ink);
+  min-height: 100%;
+  padding: 22px;
+}
+
+.rwi-header {
+  align-items: center;
+  border-bottom: 1px solid var(--rwi-border);
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  margin: 0 auto 18px;
+  max-width: 860px;
+  padding-bottom: 16px;
+}
+
+.rwi-header h1 {
+  font-family: Georgia, serif;
+  margin: 0;
+}
+
+.rwi-header p,
+.rwi-count,
+.rwi-meta,
+.rwi-note {
+  color: var(--rwi-muted);
+}
+
+.rwi-count,
+.rwi-list,
+.rwi-empty {
+  margin-left: auto;
+  margin-right: auto;
+  max-width: 860px;
+}
+
+.rwi-list {
+  display: grid;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.rwi-card,
+.rwi-empty,
+.rwi-readonly {
+  background: var(--rwi-surface);
+  border: 1px solid var(--rwi-border);
+  border-radius: 18px;
+  box-shadow: 0 10px 28px rgba(44, 36, 22, 0.08);
+  padding: 18px;
+}
+
+.rwi-meta {
+  display: flex;
+  flex-wrap: wrap;
+  font-family: var(--font-interface);
+  font-size: 0.85rem;
+  gap: 8px 14px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.rwi-quote {
+  border-left: 4px solid var(--rwi-gold);
+  font-family: Georgia, serif;
+  font-size: 1.05rem;
+  margin: 14px 0;
+  padding-left: 14px;
+}
+
+.rwi-note {
+  background: var(--rwi-surface-2);
+  border-radius: 12px;
+  margin-top: 12px;
+  padding: 12px;
+}
+
+.rwi-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.rwi-button {
+  align-items: center;
+  background: var(--rwi-surface-2);
+  border: 1px solid var(--rwi-border);
+  border-radius: 999px;
+  color: var(--rwi-ink);
+  cursor: pointer;
+  display: inline-flex;
+  font-weight: 700;
+  justify-content: center;
+  min-height: 42px;
+  padding: 10px 16px;
+}
+
+.rwi-button:hover {
+  filter: brightness(0.98);
+}
+
+.rwi-button-primary {
+  background: var(--rwi-gold);
+  border-color: var(--rwi-gold);
+  color: #fff8e8;
+}
+
+.rwi-button-muted {
+  color: var(--rwi-rust);
+}
+
+.rwi-empty {
+  margin-top: 24px;
+  text-align: center;
+}
+
+.rwi-modal textarea {
+  min-height: 90px;
+  width: 100%;
+}
+
+.rwi-modal blockquote,
+.rwi-readonly {
+  margin: 14px 0;
+}
+
+.rwi-readonly img {
+  max-height: 180px;
+  max-width: 100%;
+}
+
+.rwi-settings input {
+  min-width: 280px;
+}

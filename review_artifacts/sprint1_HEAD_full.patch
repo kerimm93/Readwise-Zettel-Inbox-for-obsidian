@@ -1,0 +1,3693 @@
+commit 624bce85de71a5c53d7b4f90383d1502b5872977
+Author: Codex <codex@openai.com>
+Date:   Mon Jun 1 05:21:33 2026 +0000
+
+    Sprint‑1: Obsidian plugin bootstrap for Readwise Inbox
+    
+    ### Motivation
+    
+    - Portiere die bestehende Single‑File-Referenz auf ein kleines, prüfbares Obsidian‑Plugin‑Bootstrap, das Vault‑State, manuelle Readwise‑Fetches und einfache Verarbeitungs‑Flows liefert.
+    - Liefere einen schlanken Vertical Slice für Kernpfade: Inbox‑View, Settings, Vault‑State, Mastery→Anki und Atomic‑Note‑Erzeugung ohne große Architekturänderungen.
+    - Bewahre die alte HTML‑App unverändert als Referenz unter `reference/index.html` und halte den Scope eng für Sprint‑1.
+    
+    ### Description
+    
+    - Füge Plugin‑Skeleton und Build‑Setup hinzu mit `manifest.json`, `package.json`, `tsconfig.json`, `esbuild.config.mjs`, TypeScript‑Quellen unter `src/` und erzeugtem `main.js`, sowie `styles.css` für die `.rwi-` Papier‑Ästhetik.
+    - Implementiere das Datenmodell in `src/types.ts` sowie einen Vault‑backed State‑Store `src/InboxState.ts` der `readwise-inbox.json` liest/schreibt, normalisiert, upsertet und idempotente Statuswechsel (`inbox`/`processed`/`skipped`) sicherstellt.
+    - Baue die Inbox‑UI als Obsidian `ItemView` in `src/InboxView.ts`, den Readwise‑Client `src/ReadwiseApi.ts` (24h first‑load + cursor + `mapReadwise()` + upsert), die AnkiConnect‑Vertical‑Slice in `src/AnkiConnect.ts` (Modelkonstanten inkl. absichtlichem `Listenting`‑Tippfehler) und den Atomic‑Note Creator mit Parent‑Fuzzy‑Search `src/ZettelCreator.ts`.
+    - Kopiere die Legacy Single‑File‑App unverändert nach `reference/index.html` und liefere zusätzliche Hilfstypen/Mocks in `src/obsidian.d.ts` für lokale TS‑Checks.
+    
+    ### Testing
+    
+    - `npm run build` wurde in der Umgebung ausgeführt und der TypeScript‑Check (`tsc --project tsconfig.json`) lief erfolgreich, erzeugte Runtime‑JS‑Artefakte und prüfte die Quelltexte.
+    - `npm install` schlug in dieser Umgebung fehl wegen Registry/Netzwerk‑Policy (`403 Forbidden`), weshalb devDependencies nicht aus dem Registry installiert wurden; dies ist eine Umgebungs‑Beschränkung und kein inhaltlicher Fehler des Plugins.
+    - Die Referenzkopie wurde verifiziert (`index.html` == `reference/index.html`) und die erstellten Dateien (`main.js`, `InboxState.js`, `InboxView.js`, `ReadwiseApi.js`, `AnkiConnect.js`, `ZettelCreator.js`, `types.js`) liegen im Repo.
+---
+ AnkiConnect.js       |   72 +++
+ InboxState.js        |  169 ++++++
+ InboxView.js         |  141 +++++
+ ReadwiseApi.js       |   84 +++
+ ZettelCreator.js     |  137 +++++
+ esbuild.config.mjs   |   26 +
+ main.js              |  134 +++++
+ manifest.json        |   10 +
+ package.json         |   22 +
+ reference/index.html | 1525 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ src/AnkiConnect.ts   |   97 ++++
+ src/InboxState.ts    |  187 +++++++
+ src/InboxView.ts     |  173 ++++++
+ src/ReadwiseApi.ts   |   89 +++
+ src/ZettelCreator.ts |  164 ++++++
+ src/main.ts          |  149 +++++
+ src/obsidian.d.ts    |  117 ++++
+ src/types.ts         |   48 ++
+ styles.css           |  145 +++++
+ tsconfig.json        |   28 +
+ types.js             |    2 +
+ 21 files changed, 3519 insertions(+)
+
+diff --git a/AnkiConnect.js b/AnkiConnect.js
+new file mode 100644
+index 0000000..8fda240
+--- /dev/null
++++ b/AnkiConnect.js
+@@ -0,0 +1,72 @@
++"use strict";
++Object.defineProperty(exports, "__esModule", { value: true });
++exports.AnkiConnect = exports.MODELS = exports.ANKI_CONNECT_ENDPOINT = void 0;
++exports.buildMedienFeld = buildMedienFeld;
++exports.buildZitatFeld = buildZitatFeld;
++exports.ANKI_CONNECT_ENDPOINT = "http://localhost:8765";
++exports.MODELS = {
++    mastery: "Mastery-Notiztyp",
++    mc: "Memrise (Lτ) Preset [Translation+Listenting | MultipleChoice+Typing] v5.1",
++    tapping: "Memrise (Lτ) Preset [Translation+Listenting | Tapping+Typing] v5.1",
++    cloze: "Memrise (Lτ) Cloze Template v5.1"
++};
++function escapeHtml(value) {
++    return value
++        .replace(/&/g, "&amp;")
++        .replace(/</g, "&lt;")
++        .replace(/>/g, "&gt;")
++        .replace(/"/g, "&quot;");
++}
++function buildMedienFeld(highlight) {
++    const parts = [];
++    if (highlight.source_cover) {
++        parts.push(`<img src="${escapeHtml(highlight.source_cover)}" alt="Cover">`);
++    }
++    if (highlight.source_url) {
++        parts.push(`<a href="${escapeHtml(highlight.source_url)}">Quelle</a>`);
++    }
++    return parts.join("<br>");
++}
++function buildZitatFeld(highlight) {
++    return `„${escapeHtml(highlight.text)}" (${escapeHtml(highlight.source_author)}, ${escapeHtml(highlight.source_title)}) <a href="${escapeHtml(highlight.readwise_url)}">📖 Readwise</a>`;
++}
++class AnkiConnect {
++    async ankiRequest(action, params = {}) {
++        const response = await fetch(exports.ANKI_CONNECT_ENDPOINT, {
++            method: "POST",
++            headers: { "Content-Type": "application/json" },
++            body: JSON.stringify({ action, version: 6, params })
++        });
++        if (!response.ok) {
++            throw new Error(`AnkiConnect HTTP ${response.status}`);
++        }
++        const payload = await response.json();
++        if (payload.error) {
++            throw new Error(payload.error);
++        }
++        return payload.result;
++    }
++    async testConnection() {
++        return this.ankiRequest("version");
++    }
++    buildMasteryNote(deckName, highlight, input) {
++        return {
++            deckName,
++            modelName: exports.MODELS.mastery,
++            fields: {
++                Frage: input.frage,
++                Antwort: input.antwort,
++                Zitat: buildZitatFeld(highlight),
++                Notizen: input.notizen,
++                Medien: buildMedienFeld(highlight)
++            },
++            options: { allowDuplicate: false },
++            tags: ["readwise-inbox", "mastery"]
++        };
++    }
++    async addMasteryNote(deckName, highlight, input) {
++        const note = this.buildMasteryNote(deckName, highlight, input);
++        return this.ankiRequest("addNote", { note });
++    }
++}
++exports.AnkiConnect = AnkiConnect;
+diff --git a/InboxState.js b/InboxState.js
+new file mode 100644
+index 0000000..f107671
+--- /dev/null
++++ b/InboxState.js
+@@ -0,0 +1,169 @@
++"use strict";
++Object.defineProperty(exports, "__esModule", { value: true });
++exports.InboxStateStore = exports.DEFAULT_STATE = void 0;
++const obsidian_1 = require("obsidian");
++const CURRENT_SCHEMA_VERSION = 1;
++exports.DEFAULT_STATE = {
++    highlights: [],
++    cards_pending: [],
++    last_readwise_cursor: null,
++    updatedAt: new Date(0).toISOString(),
++    schemaVersion: CURRENT_SCHEMA_VERSION
++};
++function nowIso() {
++    return new Date().toISOString();
++}
++function asString(value, fallback = "") {
++    return typeof value === "string" ? value : fallback;
++}
++function normalizeStatus(value) {
++    if (value === "processed" || value === "skipped" || value === "inbox") {
++        return value;
++    }
++    return "inbox";
++}
++class InboxStateStore {
++    constructor(app, getSettings) {
++        this.app = app;
++        this.getSettings = getSettings;
++        this.state = { ...exports.DEFAULT_STATE, highlights: [], cards_pending: [] };
++    }
++    getState() {
++        return this.state;
++    }
++    getInboxHighlights() {
++        return this.state.highlights.filter((highlight) => highlight.status === "inbox");
++    }
++    async load() {
++        const path = this.getStatePath();
++        const file = this.app.vault.getAbstractFileByPath(path);
++        if (!(file instanceof obsidian_1.TFile)) {
++            this.state = this.normalizeState(null);
++            return this.state;
++        }
++        const raw = await this.app.vault.read(file);
++        const parsed = raw.trim().length > 0 ? JSON.parse(raw) : null;
++        this.state = this.normalizeState(parsed);
++        return this.state;
++    }
++    async save() {
++        this.state.updatedAt = nowIso();
++        const path = this.getStatePath();
++        await this.ensureParentFolder(path);
++        const file = this.app.vault.getAbstractFileByPath(path);
++        const serialized = `${JSON.stringify(this.state, null, 2)}\n`;
++        if (file instanceof obsidian_1.TFile) {
++            await this.app.vault.modify(file, serialized);
++        }
++        else {
++            await this.app.vault.create(path, serialized);
++        }
++    }
++    upsertHighlights(incoming) {
++        let added = 0;
++        let updated = 0;
++        const byId = new Map(this.state.highlights.map((highlight) => [highlight.id, highlight]));
++        for (const next of incoming) {
++            const existing = byId.get(next.id);
++            if (!existing) {
++                this.state.highlights.push(next);
++                byId.set(next.id, next);
++                added += 1;
++                continue;
++            }
++            const status = existing.status === "processed" || existing.status === "skipped" ? existing.status : "inbox";
++            Object.assign(existing, {
++                ...existing,
++                readwise_id: existing.readwise_id || next.readwise_id,
++                text: existing.text || next.text,
++                note: existing.note || next.note,
++                source_title: existing.source_title || next.source_title,
++                source_author: existing.source_author || next.source_author,
++                source_url: existing.source_url || next.source_url,
++                source_cover: existing.source_cover || next.source_cover,
++                highlighted_at: existing.highlighted_at || next.highlighted_at,
++                category: existing.category || next.category,
++                readwise_url: existing.readwise_url || next.readwise_url,
++                loadedAt: existing.loadedAt || next.loadedAt,
++                updatedAt: nowIso(),
++                status
++            });
++            updated += 1;
++        }
++        this.state.updatedAt = nowIso();
++        return { added, updated };
++    }
++    setCursor(cursor) {
++        this.state.last_readwise_cursor = cursor;
++        this.state.updatedAt = nowIso();
++    }
++    async setStatus(id, status) {
++        const highlight = this.state.highlights.find((item) => item.id === id);
++        if (!highlight) {
++            return false;
++        }
++        if (highlight.status === status) {
++            return true;
++        }
++        if ((highlight.status === "processed" || highlight.status === "skipped") && status === "inbox") {
++            return true;
++        }
++        highlight.status = status;
++        highlight.updatedAt = nowIso();
++        await this.save();
++        return true;
++    }
++    getStatePath() {
++        return (0, obsidian_1.normalizePath)(this.getSettings().statePath || "readwise-inbox.json");
++    }
++    normalizeState(raw) {
++        const source = raw && typeof raw === "object" ? raw : {};
++        const highlights = Array.isArray(source.highlights) ? source.highlights.map((item) => this.normalizeHighlight(item)).filter(Boolean) : [];
++        return {
++            highlights,
++            cards_pending: Array.isArray(source.cards_pending) ? source.cards_pending : [],
++            last_readwise_cursor: typeof source.last_readwise_cursor === "string" ? source.last_readwise_cursor : null,
++            updatedAt: asString(source.updatedAt, nowIso()),
++            schemaVersion: CURRENT_SCHEMA_VERSION
++        };
++    }
++    normalizeHighlight(raw) {
++        if (!raw || typeof raw !== "object") {
++            return null;
++        }
++        const item = raw;
++        const readwiseId = asString(item.readwise_id || item.id);
++        if (!readwiseId) {
++            return null;
++        }
++        const loadedAt = asString(item.loadedAt, nowIso());
++        return {
++            id: asString(item.id, readwiseId),
++            readwise_id: readwiseId,
++            text: asString(item.text),
++            note: asString(item.note),
++            source_title: asString(item.source_title, "Untitled"),
++            source_author: asString(item.source_author, "Unknown author"),
++            source_url: asString(item.source_url),
++            source_cover: asString(item.source_cover),
++            highlighted_at: asString(item.highlighted_at),
++            category: asString(item.category, "highlight"),
++            readwise_url: asString(item.readwise_url),
++            status: normalizeStatus(item.status),
++            loadedAt,
++            updatedAt: asString(item.updatedAt, loadedAt)
++        };
++    }
++    async ensureParentFolder(path) {
++        const parts = path.split("/");
++        parts.pop();
++        const folder = parts.join("/");
++        if (!folder) {
++            return;
++        }
++        if (!this.app.vault.getAbstractFileByPath(folder)) {
++            await this.app.vault.createFolder(folder);
++        }
++    }
++}
++exports.InboxStateStore = InboxStateStore;
+diff --git a/InboxView.js b/InboxView.js
+new file mode 100644
+index 0000000..54bca9c
+--- /dev/null
++++ b/InboxView.js
+@@ -0,0 +1,141 @@
++"use strict";
++Object.defineProperty(exports, "__esModule", { value: true });
++exports.InboxView = exports.VIEW_TYPE_READWISE_INBOX = void 0;
++const obsidian_1 = require("obsidian");
++const AnkiConnect_1 = require("./AnkiConnect");
++exports.VIEW_TYPE_READWISE_INBOX = "readwise-inbox-view";
++class MasteryModal extends obsidian_1.Modal {
++    constructor(app, highlight, onSubmit) {
++        super(app);
++        this.highlight = highlight;
++        this.onSubmit = onSubmit;
++        this.frage = "";
++        this.antwort = "";
++        this.notizen = highlight.note;
++    }
++    onOpen() {
++        const { contentEl } = this;
++        contentEl.empty();
++        contentEl.addClass("rwi-modal");
++        contentEl.createEl("h2", { text: "Mastery Card" });
++        new obsidian_1.Setting(contentEl)
++            .setName("Frage")
++            .addTextArea((text) => text.setPlaceholder("Frage").setValue(this.frage).onChange((value) => { this.frage = value; }));
++        new obsidian_1.Setting(contentEl)
++            .setName("Antwort")
++            .addTextArea((text) => text.setPlaceholder("Antwort").setValue(this.antwort).onChange((value) => { this.antwort = value; }));
++        const quote = contentEl.createDiv({ cls: "rwi-readonly" });
++        quote.createEl("strong", { text: "Zitat" });
++        quote.createDiv().innerHTML = (0, AnkiConnect_1.buildZitatFeld)(this.highlight);
++        new obsidian_1.Setting(contentEl)
++            .setName("Notizen")
++            .addTextArea((text) => text.setValue(this.notizen).onChange((value) => { this.notizen = value; }));
++        const media = contentEl.createDiv({ cls: "rwi-readonly" });
++        media.createEl("strong", { text: "Medien" });
++        media.createDiv().innerHTML = (0, AnkiConnect_1.buildMedienFeld)(this.highlight) || "—";
++        new obsidian_1.Setting(contentEl)
++            .addButton((button) => button.setButtonText("An Anki senden").setCta().onClick(async () => {
++            if (!this.frage.trim() || !this.antwort.trim()) {
++                new obsidian_1.Notice("Frage und Antwort sind erforderlich.");
++                return;
++            }
++            await this.onSubmit(this.frage, this.antwort, this.notizen);
++            this.close();
++        }));
++    }
++}
++class InboxView extends obsidian_1.ItemView {
++    constructor(leaf, deps) {
++        super(leaf);
++        this.deps = deps;
++    }
++    getViewType() {
++        return exports.VIEW_TYPE_READWISE_INBOX;
++    }
++    getDisplayText() {
++        return "Readwise Inbox";
++    }
++    getIcon() {
++        return "inbox";
++    }
++    async onOpen() {
++        await this.deps.stateStore.load();
++        this.render();
++    }
++    render() {
++        const container = this.containerEl.children[1];
++        container.empty();
++        container.addClass("rwi-view");
++        const header = container.createDiv({ cls: "rwi-header" });
++        const titleWrap = header.createDiv();
++        titleWrap.createEl("h1", { text: "Readwise Inbox" });
++        titleWrap.createEl("p", { text: "Highlights in Anki-Karten, Atomic Notes oder Skip überführen." });
++        const fetchButton = header.createEl("button", { text: "Readwise manuell laden", cls: "rwi-button rwi-button-primary" });
++        fetchButton.addEventListener("click", () => this.fetchReadwise());
++        const highlights = this.deps.stateStore.getInboxHighlights();
++        const count = container.createDiv({ cls: "rwi-count" });
++        count.textContent = `${highlights.length} Highlight${highlights.length === 1 ? "" : "s"} in der Inbox`;
++        if (highlights.length === 0) {
++            const empty = container.createDiv({ cls: "rwi-empty" });
++            empty.createEl("h2", { text: "Inbox leer" });
++            empty.createEl("p", { text: "Lade Readwise manuell oder genieße die freie Fläche." });
++            return;
++        }
++        const list = container.createDiv({ cls: "rwi-list" });
++        for (const highlight of highlights) {
++            list.appendChild(this.renderHighlight(highlight));
++        }
++    }
++    renderHighlight(highlight) {
++        const card = createDiv({ cls: "rwi-card" });
++        const meta = card.createDiv({ cls: "rwi-meta" });
++        meta.createSpan({ text: highlight.source_author || "Unknown author" });
++        meta.createSpan({ text: highlight.source_title || "Untitled" });
++        card.createEl("blockquote", { text: highlight.text, cls: "rwi-quote" });
++        if (highlight.note) {
++            const note = card.createDiv({ cls: "rwi-note" });
++            note.createEl("strong", { text: "Note: " });
++            note.appendText(highlight.note);
++        }
++        const actions = card.createDiv({ cls: "rwi-actions" });
++        actions.createEl("button", { text: "Mastery Card", cls: "rwi-button rwi-button-primary" }).addEventListener("click", () => this.openMastery(highlight));
++        actions.createEl("button", { text: "Atomic Note", cls: "rwi-button" }).addEventListener("click", () => this.openAtomic(highlight));
++        actions.createEl("button", { text: "Skip", cls: "rwi-button rwi-button-muted" }).addEventListener("click", () => this.skip(highlight));
++        return card;
++    }
++    async fetchReadwise() {
++        try {
++            await this.deps.readwiseApi.fetchHighlights();
++            this.render();
++        }
++        catch (error) {
++            new obsidian_1.Notice(error instanceof Error ? error.message : "Readwise Fetch fehlgeschlagen.");
++        }
++    }
++    async skip(highlight) {
++        await this.deps.stateStore.setStatus(highlight.id, "skipped");
++        new obsidian_1.Notice("Highlight geskippt.");
++        this.render();
++    }
++    openMastery(highlight) {
++        new MasteryModal(this.app, highlight, async (frage, antwort, notizen) => {
++            try {
++                await this.deps.anki.addMasteryNote(this.deps.getSettings().masteryDeck, highlight, { frage, antwort, notizen });
++                await this.deps.stateStore.setStatus(highlight.id, "processed");
++                new obsidian_1.Notice("Mastery Card an Anki gesendet.");
++                this.render();
++            }
++            catch (error) {
++                new obsidian_1.Notice(error instanceof Error ? `Anki Fehler: ${error.message}` : "Anki Fehler.");
++            }
++        }).open();
++    }
++    openAtomic(highlight) {
++        this.deps.zettelCreator.openCreateModal(highlight, async () => {
++            await this.deps.stateStore.setStatus(highlight.id, "processed");
++            new obsidian_1.Notice("Atomic Note erstellt.");
++            this.render();
++        });
++    }
++}
++exports.InboxView = InboxView;
+diff --git a/ReadwiseApi.js b/ReadwiseApi.js
+new file mode 100644
+index 0000000..631b13f
+--- /dev/null
++++ b/ReadwiseApi.js
+@@ -0,0 +1,84 @@
++"use strict";
++Object.defineProperty(exports, "__esModule", { value: true });
++exports.ReadwiseApi = void 0;
++const obsidian_1 = require("obsidian");
++const READWISE_ENDPOINT = "https://readwise.io/api/v3/list/";
++function asString(value, fallback = "") {
++    return typeof value === "string" ? value : fallback;
++}
++function firstString(...values) {
++    for (const value of values) {
++        if (typeof value === "string" && value.length > 0) {
++            return value;
++        }
++    }
++    return "";
++}
++class ReadwiseApi {
++    constructor(getSettings, stateStore) {
++        this.getSettings = getSettings;
++        this.stateStore = stateStore;
++    }
++    async fetchHighlights() {
++        const token = this.getSettings().readwiseToken.trim();
++        if (!token) {
++            throw new Error("Readwise API Token fehlt in den Plugin-Einstellungen.");
++        }
++        const state = this.stateStore.getState();
++        const url = new URL(READWISE_ENDPOINT);
++        url.searchParams.set("category", "highlight");
++        if (state.last_readwise_cursor) {
++            url.searchParams.set("pageCursor", state.last_readwise_cursor);
++        }
++        else {
++            const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
++            url.searchParams.set("updatedAfter", since);
++        }
++        const response = await (0, obsidian_1.requestUrl)({
++            url: url.toString(),
++            method: "GET",
++            headers: { Authorization: `Token ${token}` }
++        });
++        if (response.status < 200 || response.status >= 300) {
++            throw new Error(`Readwise Fetch fehlgeschlagen (${response.status}).`);
++        }
++        const data = response.json;
++        const results = Array.isArray(data.results) ? data.results : [];
++        const highlights = results.map((item) => this.mapReadwise(item)).filter(Boolean);
++        const counts = this.stateStore.upsertHighlights(highlights);
++        const cursor = firstString(data.nextPageCursor, data.next_page_cursor, data.nextCursor) || null;
++        this.stateStore.setCursor(cursor);
++        await this.stateStore.save();
++        new obsidian_1.Notice(`Readwise geladen: ${counts.added} neu, ${counts.updated} aktualisiert.`);
++        return { ...counts, cursor };
++    }
++    mapReadwise(raw) {
++        if (!raw || typeof raw !== "object") {
++            return null;
++        }
++        const item = raw;
++        const id = firstString(item.id, item.highlight_id, item.readwise_id);
++        if (!id) {
++            return null;
++        }
++        const book = typeof item.book === "object" && item.book !== null ? item.book : {};
++        const now = new Date().toISOString();
++        return {
++            id,
++            readwise_id: id,
++            text: firstString(item.text, item.highlight, item.content),
++            note: firstString(item.note, item.notes),
++            source_title: firstString(item.source_title, item.title, book.title, "Untitled"),
++            source_author: firstString(item.source_author, item.author, book.author, "Unknown author"),
++            source_url: firstString(item.source_url, item.url, book.source_url),
++            source_cover: firstString(item.source_cover, item.cover_image_url, book.cover_image_url),
++            highlighted_at: firstString(item.highlighted_at, item.created_at, item.updated_at),
++            category: asString(item.category, "highlight"),
++            readwise_url: firstString(item.readwise_url, item.url),
++            status: "inbox",
++            loadedAt: now,
++            updatedAt: now
++        };
++    }
++}
++exports.ReadwiseApi = ReadwiseApi;
+diff --git a/ZettelCreator.js b/ZettelCreator.js
+new file mode 100644
+index 0000000..56f9a63
+--- /dev/null
++++ b/ZettelCreator.js
+@@ -0,0 +1,137 @@
++"use strict";
++Object.defineProperty(exports, "__esModule", { value: true });
++exports.ZettelCreator = exports.AtomicNoteModal = exports.ParentSuggestModal = void 0;
++const obsidian_1 = require("obsidian");
++function today() {
++    return new Date().toISOString().slice(0, 10);
++}
++function cleanSegment(value) {
++    return value.trim().replace(/[\\/:*?"<>|]/g, "-");
++}
++function yamlString(value) {
++    return JSON.stringify(value);
++}
++class ParentSuggestModal extends obsidian_1.FuzzySuggestModal {
++    constructor(app, onChoose) {
++        super(app);
++        this.onChoose = onChoose;
++        this.setPlaceholder("Parent-Note nach title-Frontmatter oder Dateiname suchen...");
++    }
++    getItems() {
++        return this.app.vault.getMarkdownFiles().map((file) => {
++            var _a;
++            const cache = this.app.metadataCache.getFileCache(file);
++            const title = typeof ((_a = cache === null || cache === void 0 ? void 0 : cache.frontmatter) === null || _a === void 0 ? void 0 : _a.title) === "string" ? cache.frontmatter.title : file.basename;
++            return { title, path: file.path, basename: file.basename };
++        });
++    }
++    getItemText(item) {
++        return `${item.title} — ${item.path}`;
++    }
++    onChooseItem(item) {
++        this.onChoose(item);
++    }
++}
++exports.ParentSuggestModal = ParentSuggestModal;
++class AtomicNoteModal extends obsidian_1.Modal {
++    constructor(app, highlight, onSubmit) {
++        super(app);
++        this.highlight = highlight;
++        this.onSubmit = onSubmit;
++        this.parent = null;
++        this.kuerzel = "";
++        this.title = "";
++        this.desc = "";
++        this.note = "";
++        this.title = highlight.text.slice(0, 80).replace(/\s+/g, " ").trim();
++        this.desc = highlight.source_title;
++        this.note = highlight.note;
++    }
++    onOpen() {
++        this.render();
++    }
++    render() {
++        const { contentEl } = this;
++        contentEl.empty();
++        contentEl.addClass("rwi-modal");
++        contentEl.createEl("h2", { text: "Atomic Note erstellen" });
++        new obsidian_1.Setting(contentEl)
++            .setName("Parent")
++            .setDesc(this.parent ? `${this.parent.title} (${this.parent.path})` : "Parent per Fuzzy Search auswählen")
++            .addButton((button) => button.setButtonText("Parent suchen").onClick(() => {
++            new ParentSuggestModal(this.app, (candidate) => {
++                this.parent = candidate;
++                this.render();
++            }).open();
++        }));
++        new obsidian_1.Setting(contentEl)
++            .setName("Kürzel")
++            .setDesc("Dateiname wird <parent-basename>.<k>.md")
++            .addText((text) => text.setPlaceholder("k").setValue(this.kuerzel).onChange((value) => { this.kuerzel = value; }));
++        new obsidian_1.Setting(contentEl)
++            .setName("Titel")
++            .addTextArea((text) => text.setValue(this.title).onChange((value) => { this.title = value; }));
++        new obsidian_1.Setting(contentEl)
++            .setName("Beschreibung")
++            .addText((text) => text.setValue(this.desc).onChange((value) => { this.desc = value; }));
++        new obsidian_1.Setting(contentEl)
++            .setName("Notiz")
++            .addTextArea((text) => text.setValue(this.note).onChange((value) => { this.note = value; }));
++        contentEl.createEl("blockquote", { text: this.highlight.text });
++        new obsidian_1.Setting(contentEl)
++            .addButton((button) => button.setButtonText("Erstellen").setCta().onClick(async () => {
++            if (!this.parent) {
++                new obsidian_1.Notice("Bitte zuerst eine Parent-Note auswählen.");
++                return;
++            }
++            if (!this.kuerzel.trim()) {
++                new obsidian_1.Notice("Bitte ein Kürzel eingeben.");
++                return;
++            }
++            await this.onSubmit({ parent: this.parent, kuerzel: this.kuerzel, title: this.title, desc: this.desc, note: this.note });
++            this.close();
++        }));
++    }
++}
++exports.AtomicNoteModal = AtomicNoteModal;
++class ZettelCreator {
++    constructor(app, getSettings) {
++        this.app = app;
++        this.getSettings = getSettings;
++    }
++    openCreateModal(highlight, onCreated) {
++        new AtomicNoteModal(this.app, highlight, async (input) => {
++            const file = await this.createAtomicNote(highlight, input);
++            await onCreated(file);
++        }).open();
++    }
++    async createAtomicNote(highlight, input) {
++        const folder = (0, obsidian_1.normalizePath)(this.getSettings().zettelFolder || "");
++        if (folder) {
++            await this.ensureFolder(folder);
++        }
++        const filename = `${input.parent.basename}.${cleanSegment(input.kuerzel)}.md`;
++        const path = (0, obsidian_1.normalizePath)(folder ? `${folder}/${filename}` : filename);
++        if (this.app.vault.getAbstractFileByPath(path)) {
++            throw new Error(`Datei existiert bereits: ${path}`);
++        }
++        const markdown = this.buildMarkdown(highlight, input);
++        const file = await this.app.vault.create(path, markdown);
++        await this.app.workspace.getLeaf("tab").openFile(file);
++        return file;
++    }
++    buildMarkdown(highlight, input) {
++        return `---\ntitle: ${yamlString(input.title)}\nalias: ${yamlString(input.title)}\ndesc: ${yamlString(input.desc)}\ntags:\n  - proto-atomic\ncreated: ${today()}\nrwi_source: readwise\n---\n\n# ${input.title}\n\n${input.note}\n\n## 📖 Quelle\n\n„${highlight.text}"\n(${highlight.source_author}, ${highlight.source_title})\n[📖 Original in Readwise](${highlight.readwise_url})\n`;
++    }
++    async ensureFolder(folder) {
++        const parts = folder.split("/").filter(Boolean);
++        let current = "";
++        for (const part of parts) {
++            current = current ? `${current}/${part}` : part;
++            if (!this.app.vault.getAbstractFileByPath(current)) {
++                await this.app.vault.createFolder(current);
++            }
++        }
++    }
++}
++exports.ZettelCreator = ZettelCreator;
+diff --git a/esbuild.config.mjs b/esbuild.config.mjs
+new file mode 100644
+index 0000000..6e6a11b
+--- /dev/null
++++ b/esbuild.config.mjs
+@@ -0,0 +1,26 @@
++import esbuild from "esbuild";
++
++const prod = process.argv[2] === "production";
++const watch = process.argv.includes("--watch");
++const builtins = ["assert", "buffer", "child_process", "crypto", "events", "fs", "http", "https", "net", "os", "path", "querystring", "stream", "timers", "tls", "tty", "url", "util", "zlib"];
++
++const context = await esbuild.context({
++  banner: { js: "/* Readwise Inbox Obsidian plugin */" },
++  entryPoints: ["src/main.ts"],
++  bundle: true,
++  external: ["obsidian", "electron", "@codemirror/autocomplete", "@codemirror/collab", "@codemirror/commands", "@codemirror/language", "@codemirror/lint", "@codemirror/search", "@codemirror/state", "@codemirror/view", "@lezer/common", "@lezer/highlight", "@lezer/lr", ...builtins],
++  format: "cjs",
++  target: "es2018",
++  logLevel: "info",
++  sourcemap: prod ? false : "inline",
++  treeShaking: true,
++  outfile: "main.js"
++});
++
++if (watch) {
++  await context.watch();
++  console.log("Watching for changes...");
++} else {
++  await context.rebuild();
++  await context.dispose();
++}
+diff --git a/main.js b/main.js
+new file mode 100644
+index 0000000..fe2a341
+--- /dev/null
++++ b/main.js
+@@ -0,0 +1,134 @@
++"use strict";
++Object.defineProperty(exports, "__esModule", { value: true });
++const obsidian_1 = require("obsidian");
++const AnkiConnect_1 = require("./AnkiConnect");
++const InboxState_1 = require("./InboxState");
++const InboxView_1 = require("./InboxView");
++const ReadwiseApi_1 = require("./ReadwiseApi");
++const ZettelCreator_1 = require("./ZettelCreator");
++const DEFAULT_SETTINGS = {
++    readwiseToken: "",
++    masteryDeck: "Mastery",
++    memriseDeck: "Memrise",
++    statePath: "readwise-inbox.json",
++    zettelFolder: ""
++};
++class ReadwiseInboxPlugin extends obsidian_1.Plugin {
++    constructor() {
++        super(...arguments);
++        this.settings = DEFAULT_SETTINGS;
++    }
++    async onload() {
++        await this.loadSettings();
++        this.stateStore = new InboxState_1.InboxStateStore(this.app, () => this.settings);
++        await this.stateStore.load();
++        this.readwiseApi = new ReadwiseApi_1.ReadwiseApi(() => this.settings, this.stateStore);
++        this.anki = new AnkiConnect_1.AnkiConnect();
++        this.zettelCreator = new ZettelCreator_1.ZettelCreator(this.app, () => this.settings);
++        this.registerView(InboxView_1.VIEW_TYPE_READWISE_INBOX, (leaf) => new InboxView_1.InboxView(leaf, {
++            stateStore: this.stateStore,
++            readwiseApi: this.readwiseApi,
++            anki: this.anki,
++            zettelCreator: this.zettelCreator,
++            getSettings: () => this.settings
++        }));
++        this.addRibbonIcon("inbox", "Readwise Inbox öffnen", () => this.activateView());
++        this.addCommand({
++            id: "open-readwise-inbox",
++            name: "Readwise Inbox öffnen",
++            callback: () => this.activateView()
++        });
++        this.addCommand({
++            id: "test-ankiconnect",
++            name: "AnkiConnect Verbindung testen",
++            callback: () => this.testAnki()
++        });
++        this.addSettingTab(new ReadwiseInboxSettingTab(this.app, this));
++    }
++    onunload() {
++        this.app.workspace.detachLeavesOfType(InboxView_1.VIEW_TYPE_READWISE_INBOX);
++    }
++    async activateView() {
++        var _a;
++        const leaves = this.app.workspace.getLeavesOfType(InboxView_1.VIEW_TYPE_READWISE_INBOX);
++        let leaf;
++        if (leaves.length > 0) {
++            leaf = leaves[0];
++        }
++        else {
++            leaf = (_a = this.app.workspace.getRightLeaf(false)) !== null && _a !== void 0 ? _a : this.app.workspace.getLeaf(true);
++            await leaf.setViewState({ type: InboxView_1.VIEW_TYPE_READWISE_INBOX, active: true });
++        }
++        this.app.workspace.revealLeaf(leaf);
++    }
++    async loadSettings() {
++        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
++    }
++    async saveSettings() {
++        await this.saveData(this.settings);
++    }
++    async testAnki() {
++        try {
++            const version = await this.anki.testConnection();
++            new obsidian_1.Notice(`AnkiConnect verbunden (Version ${version}).`);
++        }
++        catch (error) {
++            new obsidian_1.Notice(error instanceof Error ? `AnkiConnect nicht erreichbar: ${error.message}` : "AnkiConnect nicht erreichbar.");
++        }
++    }
++}
++exports.default = ReadwiseInboxPlugin;
++class ReadwiseInboxSettingTab extends obsidian_1.PluginSettingTab {
++    constructor(app, plugin) {
++        super(app, plugin);
++        this.plugin = plugin;
++    }
++    display() {
++        const { containerEl } = this;
++        containerEl.empty();
++        containerEl.addClass("rwi-settings");
++        containerEl.createEl("h2", { text: "Readwise Inbox Einstellungen" });
++        new obsidian_1.Setting(containerEl)
++            .setName("Readwise API Token")
++            .setDesc("Token wird lokal in den Obsidian Plugin-Daten gespeichert und nicht ins Repository geschrieben.")
++            .addText((text) => {
++            text.inputEl.type = "password";
++            text.setPlaceholder("Readwise Token").setValue(this.plugin.settings.readwiseToken).onChange(async (value) => {
++                this.plugin.settings.readwiseToken = value.trim();
++                await this.plugin.saveSettings();
++            });
++        });
++        new obsidian_1.Setting(containerEl)
++            .setName("Mastery Deck")
++            .addText((text) => text.setValue(this.plugin.settings.masteryDeck).onChange(async (value) => {
++            this.plugin.settings.masteryDeck = value;
++            await this.plugin.saveSettings();
++        }));
++        new obsidian_1.Setting(containerEl)
++            .setName("Memrise Deck")
++            .setDesc("Sprint 1 legt nur die Settings und Modellkonstanten an; kein vollständiger Memrise-Flow.")
++            .addText((text) => text.setValue(this.plugin.settings.memriseDeck).onChange(async (value) => {
++            this.plugin.settings.memriseDeck = value;
++            await this.plugin.saveSettings();
++        }));
++        new obsidian_1.Setting(containerEl)
++            .setName("State-Dateipfad")
++            .setDesc("Default: readwise-inbox.json")
++            .addText((text) => text.setValue(this.plugin.settings.statePath).onChange(async (value) => {
++            this.plugin.settings.statePath = value.trim() || "readwise-inbox.json";
++            await this.plugin.saveSettings();
++            await this.plugin.stateStore.load();
++        }));
++        new obsidian_1.Setting(containerEl)
++            .setName("Zettel-Zielordner")
++            .setDesc("Leer lassen für Vault-Root.")
++            .addText((text) => text.setPlaceholder("z.B. Zettel").setValue(this.plugin.settings.zettelFolder).onChange(async (value) => {
++            this.plugin.settings.zettelFolder = value.trim();
++            await this.plugin.saveSettings();
++        }));
++        new obsidian_1.Setting(containerEl)
++            .setName("AnkiConnect")
++            .setDesc("Testet http://localhost:8765")
++            .addButton((button) => button.setButtonText("Verbindung testen").onClick(() => this.plugin.testAnki()));
++    }
++}
+diff --git a/manifest.json b/manifest.json
+new file mode 100644
+index 0000000..f1ec4c3
+--- /dev/null
++++ b/manifest.json
+@@ -0,0 +1,10 @@
++{
++  "id": "readwise-inbox",
++  "name": "Readwise Inbox",
++  "version": "0.1.0",
++  "minAppVersion": "1.5.0",
++  "description": "Process Readwise highlights into Anki mastery cards, atomic notes, or skipped inbox items.",
++  "author": "Readwise Inbox",
++  "authorUrl": "",
++  "isDesktopOnly": false
++}
+diff --git a/package.json b/package.json
+new file mode 100644
+index 0000000..19e64cf
+--- /dev/null
++++ b/package.json
+@@ -0,0 +1,22 @@
++{
++  "name": "readwise-inbox-obsidian",
++  "version": "0.1.0",
++  "description": "Readwise Inbox Obsidian plugin bootstrap.",
++  "main": "main.js",
++  "scripts": {
++    "build": "tsc --project tsconfig.json",
++    "dev": "node esbuild.config.mjs --watch"
++  },
++  "keywords": [
++    "obsidian",
++    "readwise",
++    "anki"
++  ],
++  "author": "",
++  "license": "MIT",
++  "devDependencies": {
++    "esbuild": "^0.25.0",
++    "obsidian": "^1.5.12",
++    "typescript": "^5.4.3"
++  }
++}
+diff --git a/reference/index.html b/reference/index.html
+new file mode 100644
+index 0000000..5e30960
+--- /dev/null
++++ b/reference/index.html
+@@ -0,0 +1,1525 @@
++<!DOCTYPE html>
++<html lang="de">
++<head>
++<meta charset="UTF-8">
++<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
++<title>Readwise Inbox</title>
++<link rel="preconnect" href="https://fonts.googleapis.com">
++<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
++<link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=Lato:wght@400;700&family=JetBrains+Mono&display=swap" rel="stylesheet">
++<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
++<style>
++:root {
++  --bg:          #f5f0e8;
++  --bg-mid:      #ede7d9;
++  --surface:     #faf7f2;
++  --surface-2:   #f0ead8;
++  --border:      #c8bfa8;
++  --border-light:#ddd5c0;
++
++  --ink:         #2c2416;
++  --ink-light:   #6b5d4a;
++  --ink-dim:     #a89880;
++
++  --gold:        #b8860b;
++  --gold-light:  #d4a017;
++  --rust:        #8b3a2a;
++  --green:       #4a7c4e;
++  --red:         #9e2a2b;
++  --blue:        #2d5a8e;
++  --teal:        #2d7a6e;
++
++  --body: 'Lora', Georgia, serif;
++  --mono: 'JetBrains Mono', 'Courier New', monospace;
++  --label: 'Lato', sans-serif;
++}
++
++* { box-sizing: border-box; margin: 0; padding: 0; }
++
++html, body {
++  background-color: var(--bg);
++  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
++  color: var(--ink);
++  font-family: var(--body);
++  font-size: 16px;
++  line-height: 1.55;
++  -webkit-font-smoothing: antialiased;
++  min-height: 100vh;
++}
++
++a { color: var(--blue); text-decoration: none; }
++a:hover { text-decoration: underline; }
++
++button { font-family: var(--label); cursor: pointer; border: none; background: none; color: inherit; }
++
++::-webkit-scrollbar { width: 11px; height: 11px; }
++::-webkit-scrollbar-track { background: var(--bg-mid); }
++::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; border: 2px solid var(--bg-mid); }
++::-webkit-scrollbar-thumb:hover { background: var(--ink-dim); }
++
++/* ============ HEADER ============ */
++.topbar {
++  position: sticky;
++  top: 0;
++  z-index: 40;
++  background: var(--bg-mid);
++  border-bottom: 1px solid var(--border);
++  padding: env(safe-area-inset-top) 0 0 0;
++}
++.topbar-inner {
++  max-width: 860px;
++  margin: 0 auto;
++  padding: 13px 18px;
++  display: flex;
++  align-items: center;
++  gap: 14px;
++}
++.brand { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
++.brand-mark {
++  width: 40px; height: 40px;
++  flex: none;
++  border-radius: 8px;
++  background: var(--ink);
++  display: grid;
++  place-items: center;
++  color: var(--bg);
++  font-family: var(--body);
++  font-weight: 600;
++  font-size: 19px;
++  font-style: italic;
++}
++.brand-title { font-family: var(--body); font-weight: 600; font-size: 19px; letter-spacing: 0.2px; color: var(--ink); }
++.brand-sub { font-size: 12px; color: var(--ink-light); font-family: var(--label); letter-spacing: 0.2px; }
++
++.nav { display: flex; gap: 4px; }
++.nav-btn {
++  min-height: 44px;
++  padding: 0 15px;
++  border-radius: 8px;
++  color: var(--ink-light);
++  font-weight: 700;
++  font-size: 14px;
++  font-family: var(--label);
++  display: flex;
++  align-items: center;
++  gap: 8px;
++  transition: background .15s, color .15s;
++}
++.nav-btn .nb-count {
++  font-size: 11px;
++  background: var(--surface-2);
++  color: var(--ink-light);
++  border: 1px solid var(--border);
++  border-radius: 20px;
++  padding: 1px 8px;
++  min-width: 22px;
++  text-align: center;
++}
++.nav-btn:hover { color: var(--ink); background: var(--surface); }
++.nav-btn.active { color: var(--bg); background: var(--ink); }
++.nav-btn.active .nb-count { background: rgba(245,240,232,0.22); color: var(--bg); border-color: transparent; }
++
++.hamburger {
++  display: none;
++  width: 44px; height: 44px;
++  border-radius: 8px;
++  align-items: center;
++  justify-content: center;
++  color: var(--ink);
++  background: var(--surface);
++  border: 1.5px solid var(--border);
++}
++.hamburger svg { width: 22px; height: 22px; }
++
++/* ============ LAYOUT ============ */
++.wrap { max-width: 860px; margin: 0 auto; padding: 28px 18px 120px; }
++.tab { display: none; }
++.tab.active { display: block; }
++
++.tab-head { margin-bottom: 22px; }
++.tab-head h2 { font-size: 25px; font-weight: 600; display: flex; align-items: center; gap: 10px; }
++.tab-head p { color: var(--ink-light); font-size: 15px; margin-top: 5px; font-family: var(--label); }
++
++/* ============ INBOX CARDS ============ */
++.feed { display: flex; flex-direction: column; gap: 18px; }
++
++.hl-card {
++  position: relative;
++  background: var(--surface);
++  border: 1px solid var(--border);
++  border-radius: 6px;
++  padding: 20px 22px 20px 26px;
++  overflow: hidden;
++  box-shadow: 0 1px 2px rgba(44,36,22,0.05);
++  transition: opacity .25s, box-shadow .2s;
++}
++.hl-card::before {
++  content: "";
++  position: absolute;
++  left: 0; top: 0; bottom: 0;
++  width: 4px;
++  background: var(--gold);
++}
++.hl-card:hover { box-shadow: 0 4px 14px rgba(44,36,22,0.09); }
++.hl-card.done { opacity: 0.5; }
++.hl-card.skipped { opacity: 0.5; }
++.hl-card.done::before { background: var(--green); }
++.hl-card.skipped::before { background: var(--ink-dim); }
++
++.hl-top { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 13px; }
++.hl-src { flex: 1; min-width: 0; }
++.hl-src .t { font-weight: 600; font-size: 16px; color: var(--ink); }
++.hl-src .a { font-size: 13px; color: var(--ink-light); font-family: var(--label); margin-top: 2px; }
++
++.pill {
++  flex: none;
++  font-family: var(--label);
++  font-weight: 700;
++  font-size: 10px;
++  letter-spacing: 0.6px;
++  text-transform: uppercase;
++  padding: 5px 9px;
++  border-radius: 4px;
++  white-space: nowrap;
++}
++.pill.inbox { background: rgba(184,134,11,0.12); color: var(--gold); border: 1px solid rgba(184,134,11,0.35); }
++.pill.done  { background: rgba(74,124,78,0.12); color: var(--green); border: 1px solid rgba(74,124,78,0.35); }
++.pill.skip  { background: var(--surface-2); color: var(--ink-light); border: 1px solid var(--border); }
++
++.hl-text {
++  font-size: 18px;
++  font-style: italic;
++  font-family: var(--body);
++  line-height: 1.66;
++  color: var(--ink);
++  margin-bottom: 12px;
++  text-wrap: pretty;
++}
++.hl-text .qm { color: var(--ink-dim); font-style: normal; }
++.hl-text.clamped {
++  display: -webkit-box;
++  -webkit-line-clamp: 4;
++  -webkit-box-orient: vertical;
++  overflow: hidden;
++}
++.hl-more { display: none; color: var(--gold); font-weight: 700; font-size: 13px; font-family: var(--label); margin: -2px 0 12px; }
++.hl-more.show { display: inline-block; }
++
++.hl-note {
++  display: flex;
++  gap: 9px;
++  background: var(--surface-2);
++  border-left: 3px solid var(--rust);
++  border-radius: 0 6px 6px 0;
++  padding: 11px 13px;
++  margin-bottom: 15px;
++  font-size: 14.5px;
++  color: var(--ink-light);
++  font-family: var(--label);
++}
++.hl-note .ic { flex: none; }
++
++.hl-actions { display: flex; flex-wrap: wrap; gap: 10px; }
++.act {
++  min-height: 44px;
++  padding: 0 16px;
++  border-radius: 7px;
++  font-weight: 700;
++  font-size: 14px;
++  font-family: var(--label);
++  display: inline-flex;
++  align-items: center;
++  gap: 8px;
++  border: 1.5px solid var(--border);
++  background: var(--surface);
++  color: var(--ink);
++  transition: background .15s, border-color .15s;
++}
++.act:hover { background: var(--surface-2); border-color: var(--ink-dim); }
++.act.primary { border-color: var(--gold); color: var(--gold); }
++.act.primary:hover { background: rgba(184,134,11,0.08); }
++.act.secondary { border-color: var(--rust); color: var(--rust); }
++.act.secondary:hover { background: rgba(139,58,42,0.07); }
++.act:disabled { opacity: 0.4; cursor: default; }
++.act:disabled:hover { background: var(--surface); border-color: var(--border); }
++
++/* ============ EMPTY STATE ============ */
++.empty { text-align: center; padding: 60px 20px; color: var(--ink-light); }
++.empty .big { font-size: 44px; margin-bottom: 14px; }
++.empty h3 { font-size: 19px; color: var(--ink); margin-bottom: 8px; font-weight: 600; }
++.empty p { font-size: 14.5px; margin-bottom: 22px; font-family: var(--label); }
++
++/* ============ ZETTELKASTEN ============ */
++.zettel {
++  background: var(--surface);
++  border: 1px solid var(--border);
++  border-left: 4px solid var(--rust);
++  border-radius: 6px;
++  padding: 17px 19px;
++  margin-bottom: 15px;
++  box-shadow: 0 1px 2px rgba(44,36,22,0.05);
++}
++.zettel .zpath { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); margin-bottom: 6px; }
++.zettel h4 { font-size: 17px; font-weight: 600; margin-bottom: 7px; }
++.zettel .zsum { font-size: 14.5px; color: var(--ink-light); margin-bottom: 9px; font-style: italic; }
++.zettel .zanm { font-size: 14px; color: var(--ink); margin-bottom: 10px; font-family: var(--label); white-space: pre-wrap; }
++.zettel .zquote { font-size: 13.5px; color: var(--ink-light); border-left: 2px solid var(--border); padding-left: 11px; margin-bottom: 10px; font-style: italic; }
++.zettel .zmeta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12px; color: var(--ink-dim); font-family: var(--label); }
++.tag { background: var(--surface-2); color: var(--rust); border: 1px solid var(--border); border-radius: 20px; padding: 2px 10px; font-size: 12px; font-weight: 700; font-family: var(--label); }
++
++/* ============ SETTINGS / PANELS ============ */
++.panel {
++  background: var(--surface);
++  border: 1px solid var(--border);
++  border-radius: 6px;
++  padding: 22px 24px;
++  margin-bottom: 18px;
++  box-shadow: 0 1px 2px rgba(44,36,22,0.05);
++}
++.panel h3 { font-size: 12px; font-family: var(--label); font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--gold); margin-bottom: 18px; }
++.field { margin-bottom: 17px; }
++.field:last-child { margin-bottom: 0; }
++.field label { display: block; font-size: 13px; font-weight: 700; font-family: var(--label); color: var(--ink-light); margin-bottom: 7px; }
++.field .hint { font-size: 12.5px; color: var(--ink-dim); margin-top: 6px; font-family: var(--label); }
++input, select, textarea {
++  width: 100%;
++  background: var(--bg);
++  border: 1.5px solid var(--border);
++  border-radius: 6px;
++  color: var(--ink);
++  font-family: var(--body);
++  font-size: 15px;
++  padding: 11px 13px;
++  min-height: 46px;
++  transition: border-color .15s, box-shadow .15s;
++}
++input, select { font-family: var(--label); }
++textarea { min-height: 96px; resize: vertical; line-height: 1.55; }
++input:focus, select:focus, textarea:focus { outline: none; border-color: var(--gold); box-shadow: 0 0 0 3px rgba(184,134,11,0.15); }
++select { appearance: none; -webkit-appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--ink-light) 50%), linear-gradient(135deg, var(--ink-light) 50%, transparent 50%); background-position: calc(100% - 18px) center, calc(100% - 13px) center; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; padding-right: 38px; }
++
++.btn {
++  min-height: 46px;
++  padding: 0 18px;
++  border-radius: 7px;
++  font-weight: 700;
++  font-size: 14px;
++  font-family: var(--label);
++  display: inline-flex;
++  align-items: center;
++  gap: 9px;
++  border: 1.5px solid var(--border);
++  background: var(--surface);
++  color: var(--ink);
++  transition: background .15s, border-color .15s;
++}
++.btn:hover { background: var(--surface-2); border-color: var(--ink-dim); }
++.btn.gold { border-color: var(--gold); color: var(--gold); }
++.btn.gold:hover { background: rgba(184,134,11,0.08); }
++.btn.rust { border-color: var(--rust); color: var(--rust); }
++.btn.rust:hover { background: rgba(139,58,42,0.07); }
++.btn.solid { background: var(--ink); color: var(--bg); border-color: var(--ink); }
++.btn.solid:hover { background: #1f190f; }
++.btn.ghost { background: transparent; }
++.btn:disabled { opacity: 0.45; cursor: default; }
++.btn:disabled:hover { background: transparent; border-color: var(--border); }
++.btn-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
++
++.status-dot { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-light); font-family: var(--label); }
++.status-dot .d { width: 9px; height: 9px; border-radius: 50%; background: var(--ink-dim); }
++.status-dot.ok .d { background: var(--green); }
++.status-dot.bad .d { background: var(--red); }
++
++.phase2-note { font-size: 12px; color: var(--ink-dim); background: var(--bg); border: 1px dashed var(--border); border-radius: 6px; padding: 10px 12px; margin-top: 12px; font-family: var(--label); }
++
++/* ============ MODAL ============ */
++.modal-back {
++  position: fixed;
++  inset: 0;
++  z-index: 100;
++  background: rgba(44,36,22,0.42);
++  display: none;
++  align-items: flex-start;
++  justify-content: center;
++  padding: 24px 16px;
++  overflow-y: auto;
++}
++.modal-back.open { display: flex; }
++.modal {
++  width: 100%;
++  max-width: 640px;
++  background: var(--surface);
++  border: 1px solid var(--border);
++  border-radius: 8px;
++  box-shadow: 0 24px 60px rgba(44,36,22,0.3);
++  margin: auto 0;
++  animation: pop .18s ease;
++}
++.modal.narrow { max-width: 520px; }
++@keyframes pop { from { transform: translateY(12px); opacity: 0; } to { transform: none; opacity: 1; } }
++.modal-head { display: flex; align-items: center; gap: 12px; padding: 18px 22px; border-bottom: 1px solid var(--border); }
++.modal-head h3 { flex: 1; font-size: 14px; font-family: var(--label); font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: var(--ink); }
++.modal-x { width: 40px; height: 40px; border-radius: 7px; display: grid; place-items: center; font-size: 24px; color: var(--ink-light); background: var(--surface-2); }
++.modal-x:hover { color: var(--ink); background: var(--border-light); }
++.modal-body { padding: 22px; }
++.modal-foot { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; padding: 16px 22px; border-top: 1px solid var(--border); }
++
++.seg { display: flex; gap: 6px; background: var(--bg); border: 1.5px solid var(--border); border-radius: 8px; padding: 4px; }
++.seg button { flex: 1; min-height: 40px; border-radius: 5px; font-weight: 700; font-size: 13px; font-family: var(--label); color: var(--ink-light); }
++.seg button.active { background: var(--ink); color: var(--bg); }
++
++/* choice cards (type chooser) */
++.choices { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
++.choice {
++  text-align: left;
++  border: 1.5px solid var(--border);
++  background: var(--bg);
++  border-radius: 8px;
++  padding: 20px 18px;
++  transition: border-color .15s, background .15s, transform .12s;
++  min-height: 132px;
++  display: flex;
++  flex-direction: column;
++  gap: 7px;
++}
++.choice:hover { border-color: var(--gold); background: var(--surface); transform: translateY(-2px); }
++.choice .ci { font-size: 28px; }
++.choice .ct { font-weight: 600; font-size: 17px; font-family: var(--body); color: var(--ink); }
++.choice .cd { font-size: 13px; color: var(--ink-light); font-family: var(--label); }
++
++/* collapsible */
++.collapse { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 12px; overflow: hidden; background: var(--bg); }
++.collapse summary { list-style: none; cursor: pointer; padding: 13px 15px; font-weight: 700; font-size: 14px; font-family: var(--label); display: flex; align-items: center; gap: 9px; color: var(--ink); min-height: 46px; }
++.collapse summary::-webkit-details-marker { display: none; }
++.collapse summary .chev { margin-left: auto; transition: transform .2s; color: var(--ink-light); }
++.collapse[open] summary .chev { transform: rotate(90deg); }
++.collapse .cbody { padding: 0 15px 15px; }
++.readonly-box { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; font-size: 14px; color: var(--ink-light); line-height: 1.6; font-family: var(--label); }
++.readonly-box .quote { font-style: italic; color: var(--ink); margin-bottom: 6px; font-family: var(--body); }
++.cover-thumb { max-width: 120px; border-radius: 5px; margin-top: 10px; display: block; border: 1px solid var(--border); }
++
++/* prompt block */
++.prompt-block { background: var(--ink); border-radius: 7px; overflow: hidden; margin-bottom: 8px; }
++.prompt-block .pb-head { display: flex; align-items: center; gap: 10px; padding: 9px 13px; border-bottom: 1px solid rgba(245,240,232,0.12); }
++.prompt-block .pb-head .lbl { flex: 1; font-family: var(--label); font-weight: 700; font-size: 10.5px; letter-spacing: 0.8px; text-transform: uppercase; color: var(--gold-light); }
++.prompt-block .pb-copy { font-family: var(--label); font-weight: 700; font-size: 12px; color: var(--bg); background: rgba(245,240,232,0.14); border-radius: 5px; padding: 6px 11px; min-height: 34px; }
++.prompt-block .pb-copy:hover { background: rgba(245,240,232,0.24); }
++.prompt-block pre { margin: 0; padding: 14px; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; color: #e8e2d4; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow-y: auto; }
++
++.step-label { font-family: var(--label); font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--ink-light); margin: 18px 0 9px; display: flex; align-items: center; gap: 8px; }
++.step-label .num { width: 22px; height: 22px; border-radius: 50%; background: var(--ink); color: var(--bg); display: grid; place-items: center; font-size: 11px; flex: none; }
++
++/* path display (zettel) */
++.path-display { font-family: var(--mono); font-size: 14px; color: var(--ink); background: var(--bg); border: 1.5px dashed var(--border); border-radius: 6px; padding: 11px 13px; margin-top: -4px; }
++.path-display .ph { color: var(--ink-dim); }
++.path-display b { color: var(--gold); font-weight: 600; }
++
++/* memrise preview cards */
++.mcard { border: 1px solid var(--border); border-radius: 6px; padding: 13px 15px; margin-bottom: 10px; background: var(--bg); position: relative; }
++.mcard .mc-x { position: absolute; top: 8px; right: 9px; width: 28px; height: 28px; border-radius: 6px; display: grid; place-items: center; color: var(--ink-light); font-size: 18px; background: var(--surface-2); }
++.mcard .mc-x:hover { color: var(--red); }
++.mcard .mc-row { font-size: 13.5px; margin-bottom: 4px; font-family: var(--label); padding-right: 30px; }
++.mcard .mc-row .k { font-weight: 700; color: var(--ink-light); }
++.mcard .mc-row .v { color: var(--ink); }
++.parse-err { background: rgba(158,42,43,0.08); border: 1px solid rgba(158,42,43,0.3); color: var(--red); border-radius: 6px; padding: 11px 13px; font-size: 13px; font-family: var(--label); margin-bottom: 10px; }
++
++/* ============ TOASTS ============ */
++.toasts { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); z-index: 200; display: flex; flex-direction: column; gap: 10px; width: calc(100% - 36px); max-width: 460px; pointer-events: none; }
++.toast { background: var(--ink); border-radius: 7px; border-left: 4px solid var(--blue); padding: 13px 16px; font-size: 14px; color: var(--bg); font-family: var(--label); box-shadow: 0 12px 30px rgba(44,36,22,0.32); display: flex; align-items: center; gap: 10px; animation: slideUp .25s ease; pointer-events: auto; }
++.toast.ok { border-left-color: var(--green); }
++.toast.err { border-left-color: var(--red); }
++.toast.warn { border-left-color: var(--gold-light); }
++@keyframes slideUp { from { transform: translateY(16px); opacity: 0; } to { transform: none; opacity: 1; } }
++
++/* ============ DRAWER ============ */
++.drawer-back { position: fixed; inset: 0; z-index: 60; background: rgba(44,36,22,0.4); display: none; }
++.drawer-back.open { display: block; }
++.drawer { position: fixed; top: 0; left: 0; bottom: 0; z-index: 61; width: 260px; max-width: 80vw; background: var(--bg-mid); border-right: 1px solid var(--border); padding: calc(env(safe-area-inset-top) + 22px) 16px 22px; transform: translateX(-100%); transition: transform .25s ease; display: flex; flex-direction: column; gap: 8px; }
++.drawer.open { transform: none; }
++.drawer .dtitle { font-family: var(--label); font-weight: 700; text-transform: uppercase; letter-spacing: 1px; font-size: 11px; color: var(--gold); margin-bottom: 16px; padding: 0 6px; }
++.drawer .nav-btn { justify-content: flex-start; }
++
++@media (max-width: 767px) {
++  .nav { display: none; }
++  .hamburger { display: flex; }
++  .brand-sub { display: none; }
++  .choices { grid-template-columns: 1fr; }
++}
++
++.loading-bar { position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: 300; background: linear-gradient(90deg, var(--gold), var(--rust), var(--gold)); background-size: 200% 100%; animation: load 1s linear infinite; display: none; }
++.loading-bar.on { display: block; }
++@keyframes load { from { background-position: 0 0; } to { background-position: 200% 0; } }
++</style>
++</head>
++<body>
++<div class="loading-bar" id="loadingBar"></div>
++
++<header class="topbar">
++  <div class="topbar-inner">
++    <button class="hamburger" id="hamburger" aria-label="Menü">
++      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
++    </button>
++    <div class="brand">
++      <div class="brand-mark">R</div>
++      <div>
++        <div class="brand-title">Readwise Inbox</div>
++        <div class="brand-sub">Highlights → Anki & Zettelkasten</div>
++      </div>
++    </div>
++    <nav class="nav" id="navDesktop">
++      <button class="nav-btn active" data-tab="inbox">Inbox <span class="nb-count" id="cntInbox">0</span></button>
++      <button class="nav-btn" data-tab="zettel">Zettelkasten <span class="nb-count" id="cntZettel">0</span></button>
++      <button class="nav-btn" data-tab="settings">Einstellungen</button>
++    </nav>
++  </div>
++</header>
++
++<div class="drawer-back" id="drawerBack"></div>
++<aside class="drawer" id="drawer">
++  <div class="dtitle">Navigation</div>
++  <button class="nav-btn active" data-tab="inbox">Inbox <span class="nb-count" id="cntInboxM">0</span></button>
++  <button class="nav-btn" data-tab="zettel">Zettelkasten <span class="nb-count" id="cntZettelM">0</span></button>
++  <button class="nav-btn" data-tab="settings">Einstellungen</button>
++</aside>
++
++<main class="wrap">
++  <!-- INBOX -->
++  <section class="tab active" id="tab-inbox">
++    <div class="tab-head">
++      <h2>📥 Inbox</h2>
++      <p>Entscheide pro Highlight: Karteikarte, Atomic Note oder Skip.</p>
++    </div>
++    <div class="feed" id="feed"></div>
++  </section>
++
++  <!-- ZETTELKASTEN -->
++  <section class="tab" id="tab-zettel">
++    <div class="tab-head">
++      <h2>🗂 Zettelkasten</h2>
++      <p>Deine Atomic Notes — lokal gespeichert.</p>
++    </div>
++    <div class="btn-row" style="margin-bottom:18px;">
++      <button class="btn rust" id="zExportTop">📦 Als Obsidian-ZIP exportieren</button>
++    </div>
++    <div id="zettelList"></div>
++  </section>
++
++  <!-- SETTINGS -->
++  <section class="tab" id="tab-settings">
++    <div class="tab-head">
++      <h2>⚙️ Einstellungen</h2>
++      <p>Tokens und Deck-Namen.</p>
++    </div>
++
++    <div class="panel">
++      <h3>Readwise</h3>
++      <div class="field">
++        <label for="rwToken">API Token</label>
++        <input type="password" id="rwToken" placeholder="Token aus readwise.io/access_token" autocomplete="off">
++        <div class="hint">Wird nur lokal im Browser gespeichert (localStorage), nie exportiert.</div>
++      </div>
++      <div class="btn-row">
++        <button class="btn gold" id="btnFetch">↓ Neue Highlights laden</button>
++        <span class="status-dot" id="rwStatus"><span class="d"></span><span class="txt">Bereit</span></span>
++      </div>
++    </div>
++
++    <div class="panel">
++      <h3>AnkiConnect</h3>
++      <div class="field">
++        <label for="masteryDeck">Mastery-Deck</label>
++        <input type="text" id="masteryDeck" placeholder="Mastery">
++      </div>
++      <div class="field">
++        <label for="memriseDeck">Memrise-Deck</label>
++        <input type="text" id="memriseDeck" placeholder="Memrise Inbox">
++      </div>
++      <div class="btn-row">
++        <button class="btn" id="btnAnkiTest">🔌 Verbindung testen</button>
++        <span class="status-dot" id="ankiStatus"><span class="d"></span><span class="txt">Nicht getestet</span></span>
++      </div>
++      <div class="hint" style="margin-top:12px;">Endpoint: http://localhost:8765 — Anki muss laufen, AnkiConnect-Plugin installiert.</div>
++    </div>
++
++    <div class="panel">
++      <h3>GitHub Gist Sync</h3>
++      <div class="field">
++        <label for="gistToken">GitHub Token</label>
++        <input type="password" id="gistToken" placeholder="ghp_…" autocomplete="off">
++      </div>
++      <div class="field">
++        <label for="gistId">Gist ID</label>
++        <input type="text" id="gistId" placeholder="optional">
++      </div>
++      <button class="btn ghost" id="btnGistSync" disabled>↑↓ Sync (Phase 2)</button>
++      <div class="phase2-note">Phase 2 — UI vorbereitet, Sync-Funktion folgt.</div>
++    </div>
++
++    <div class="panel">
++      <h3>Export</h3>
++      <div class="btn-row">
++        <button class="btn rust" id="btnZipExport">📦 Zettels als ZIP exportieren</button>
++      </div>
++      <div class="hint" style="margin-top:12px;">Jeder Zettel wird als Obsidian-kompatible .md-Datei mit YAML-Frontmatter exportiert.</div>
++    </div>
++  </section>
++</main>
++
++<!-- ===== TYPE CHOOSER MODAL ===== -->
++<div class="modal-back" id="typeModal">
++  <div class="modal narrow">
++    <div class="modal-head">
++      <h3>Welchen Kartentyp?</h3>
++      <button class="modal-x" data-close="typeModal">×</button>
++    </div>
++    <div class="modal-body">
++      <div class="choices">
++        <button class="choice" id="chooseMastery">
++          <span class="ci">📖</span>
++          <span class="ct">Mastery Card</span>
++          <span class="cd">Frage + Antwort mit Zitat-Block. Direkt nach Anki.</span>
++        </button>
++        <button class="choice" id="chooseMemrise">
++          <span class="ci">🧠</span>
++          <span class="ct">Memrise Card</span>
++          <span class="cd">MC / Cloze / Tapping. KI-gestützt, mehrere Karten.</span>
++        </button>
++      </div>
++    </div>
++  </div>
++</div>
++
++<!-- ===== MASTERY MODAL ===== -->
++<div class="modal-back" id="masteryModal">
++  <div class="modal">
++    <div class="modal-head">
++      <h3>📖 Mastery Card</h3>
++      <button class="modal-x" data-close="masteryModal">×</button>
++    </div>
++    <div class="modal-body">
++      <div class="field">
++        <label for="mFrage">Frage</label>
++        <textarea id="mFrage" placeholder="Frage die mit einem Satz beantwortet wird…"></textarea>
++      </div>
++      <div class="field">
++        <label for="mAntwort">Antwort</label>
++        <textarea id="mAntwort" placeholder="Kernaussage…"></textarea>
++      </div>
++
++      <details class="collapse" open>
++        <summary>Zitat <span class="chev">›</span></summary>
++        <div class="cbody"><div class="readonly-box" id="cZitat"></div></div>
++      </details>
++      <details class="collapse">
++        <summary>Notizen <span class="chev">›</span></summary>
++        <div class="cbody"><textarea id="cNotizen" placeholder="Eigene Notizen…"></textarea></div>
++      </details>
++      <details class="collapse">
++        <summary>Medien <span class="chev">›</span></summary>
++        <div class="cbody"><div class="readonly-box" id="cMedien"></div></div>
++      </details>
++      <div class="hint">Deck: <b id="masteryDeckLabel">Mastery</b></div>
++    </div>
++    <div class="modal-foot">
++      <button class="btn ghost" data-close="masteryModal">Abbrechen</button>
++      <button class="btn solid" id="btnSendAnki">An Anki senden →</button>
++    </div>
++  </div>
++</div>
++
++<!-- ===== MEMRISE MODAL ===== -->
++<div class="modal-back" id="memriseModal">
++  <div class="modal">
++    <div class="modal-head">
++      <h3>🧠 Memrise Card</h3>
++      <button class="modal-x" data-close="memriseModal">×</button>
++    </div>
++    <div class="modal-body">
++      <div class="field">
++        <label>Sub-Typ</label>
++        <div class="seg" id="memSeg">
++          <button data-sub="mc" class="active">MC+Typing</button>
++          <button data-sub="tapping">Tapping</button>
++          <button data-sub="cloze">Cloze</button>
++        </div>
++      </div>
++
++      <div class="step-label"><span class="num">1</span> Prompt kopieren</div>
++      <div class="prompt-block">
++        <div class="pb-head">
++          <span class="lbl" id="promptLbl">Prompt für KI</span>
++          <button class="pb-copy" id="btnCopyPrompt">📋 Kopieren</button>
++        </div>
++        <pre id="promptText"></pre>
++      </div>
++
++      <div class="step-label"><span class="num">2</span> KI-Ergebnis (JSON) einfügen</div>
++      <textarea id="memResult" placeholder='[{"Learnable":"…","Definition":"…","Choices":"…","Attributes":"…","Extra":"…"}]' style="min-height:120px;font-family:var(--mono);font-size:13px;"></textarea>
++      <div class="btn-row" style="margin-top:10px;">
++        <button class="btn gold" id="btnParse">✓ Karten aus Ergebnis erstellen</button>
++      </div>
++
++      <div id="memPreview" style="margin-top:18px;"></div>
++      <div class="hint" id="memDeckHint" style="margin-top:6px;"></div>
++    </div>
++    <div class="modal-foot">
++      <button class="btn ghost" data-close="memriseModal">Abbrechen</button>
++      <button class="btn solid" id="btnSendMemrise" disabled>An Anki senden →</button>
++    </div>
++  </div>
++</div>
++
++<!-- ===== ATOMIC NOTE (ZETTEL) MODAL ===== -->
++<div class="modal-back" id="noteModal">
++  <div class="modal">
++    <div class="modal-head">
++      <h3>📝 Atomic Note</h3>
++      <button class="modal-x" data-close="noteModal">×</button>
++    </div>
++    <div class="modal-body">
++      <div class="field"><label for="zParent">Parent</label><input id="zParent" placeholder="z. B. 1a2 oder lernen" list="parentList"><datalist id="parentList"></datalist></div>
++      <div class="field"><label for="zKuerzel">Kürzel</label><input id="zKuerzel" placeholder="alphanumerisch — wird zu Dateiname"></div>
++      <div class="field" style="margin-bottom:18px;"><div class="path-display" id="zPath"></div></div>
++      <div class="field"><label for="zTitel">Titel</label><input id="zTitel"></div>
++      <div class="field"><label for="zSummary">Summary</label><input id="zSummary" placeholder="Ein Satz Zusammenfassung"></div>
++      <div class="field"><label for="zAnm">Anmerkung</label><textarea id="zAnm" placeholder="Eigene Gedanken…"></textarea></div>
++      <div class="field"><label for="zZitat">Zitat</label><textarea id="zZitat"></textarea></div>
++      <div class="field"><label for="zSrc">Quelle</label><input id="zSrc" readonly></div>
++    </div>
++    <div class="modal-foot">
++      <button class="btn ghost" data-close="noteModal">Abbrechen</button>
++      <button class="btn rust" id="btnSaveNote">Speichern</button>
++      <button class="btn gold" id="btnSaveNoteZip">+ Obsidian ZIP</button>
++    </div>
++  </div>
++</div>
++
++<div class="toasts" id="toasts"></div>
++
++<script>
++"use strict";
++
++/* ============================================================
++   CONSTANTS
++   ============================================================ */
++var DB_NAME = 'readwise-inbox-v1';
++var DB_VERSION = 1;
++var STORES = ['highlights', 'cards', 'zettels', 'config'];
++var TOKEN_KEY = 'readwise-inbox-token';
++var GIST_TOKEN_KEY = 'readwise-inbox-gist-token';
++var ANKI_ENDPOINT = 'http://localhost:8765';
++var READWISE_API = 'https://readwise.io/api/v3/list/';
++
++var MODELS = {
++  mastery: 'Mastery-Notiztyp',
++  mc: 'Memrise (Lτ) Preset [Translation+Listenting | MultipleChoice+Typing] v5.1',
++  tapping: 'Memrise (Lτ) Preset [Translation+Listenting | MultipleChoice+Typing] v5.1',
++  cloze: 'Memrise (Lτ) Cloze Template v5.1'
++};
++
++var db = null;
++var config = null;
++var currentHighlightId = null;
++var memSubtype = 'mc';
++var memCards = [];
++
++/* ============================================================
++   INDEXEDDB WRAPPER  (unverändert)
++   ============================================================ */
++function openDB() {
++  return new Promise(function (resolve, reject) {
++    var req = indexedDB.open(DB_NAME, DB_VERSION);
++    req.onupgradeneeded = function (e) {
++      var d = e.target.result;
++      STORES.forEach(function (s) {
++        if (!d.objectStoreNames.contains(s)) d.createObjectStore(s, { keyPath: 'id' });
++      });
++    };
++    req.onsuccess = function () { resolve(req.result); };
++    req.onerror = function () { reject(req.error); };
++  });
++}
++function tx(store, mode) { return db.transaction(store, mode).objectStore(store); }
++function idbPut(store, val) {
++  return new Promise(function (res, rej) {
++    var r = tx(store, 'readwrite').put(val);
++    r.onsuccess = function () { res(val); };
++    r.onerror = function () { rej(r.error); };
++  });
++}
++function idbGet(store, key) {
++  return new Promise(function (res, rej) {
++    var r = tx(store, 'readonly').get(key);
++    r.onsuccess = function () { res(r.result); };
++    r.onerror = function () { rej(r.error); };
++  });
++}
++function idbAll(store) {
++  return new Promise(function (res, rej) {
++    var r = tx(store, 'readonly').getAll();
++    r.onsuccess = function () { res(r.result || []); };
++    r.onerror = function () { rej(r.error); };
++  });
++}
++
++/* ============================================================
++   CONFIG
++   ============================================================ */
++function defaultConfig() {
++  return {
++    id: 'singleton',
++    mastery_deck: 'Mastery',
++    memrise_deck: 'Memrise Inbox',
++    gist_id: '',
++    last_readwise_cursor: ''
++  };
++}
++function loadConfig() {
++  return idbGet('config', 'singleton').then(function (c) {
++    config = Object.assign(defaultConfig(), c || {});
++    config.id = 'singleton';
++    if (!config.mastery_deck) config.mastery_deck = 'Mastery';
++    if (!config.memrise_deck) config.memrise_deck = 'Memrise Inbox';
++    return idbPut('config', config);
++  });
++}
++function saveConfig() { return idbPut('config', config); }
++
++function getToken() { return localStorage.getItem(TOKEN_KEY) || ''; }
++function setToken(v) { localStorage.setItem(TOKEN_KEY, v); }
++function getGistToken() { return localStorage.getItem(GIST_TOKEN_KEY) || ''; }
++function setGistToken(v) { localStorage.setItem(GIST_TOKEN_KEY, v); }
++
++/* ============================================================
++   MOCK SEED  (unverändert)
++   ============================================================ */
++function nowISO() { return new Date().toISOString(); }
++
++var MOCK = [
++  { readwise_id: 90210001, text: 'The first principle is that you must not fool yourself — and you are the easiest person to fool.', note: 'Erinnert an Confirmation Bias. Vor jedem starken Glauben prüfen, ob ich mich selbst täusche.', source_title: 'Surely You\'re Joking, Mr. Feynman!', source_author: 'Richard P. Feynman', source_url: 'https://readwise.io/bookreview/feynman', source_cover: '', category: 'books' },
++  { readwise_id: 90210002, text: 'A complex system that works is invariably found to have evolved from a simple system that worked. A complex system designed from scratch never works and cannot be patched up to make it work. You have to start over, beginning with a working simple system.', note: '', source_title: 'Systemantics', source_author: 'John Gall', source_url: 'https://readwise.io/bookreview/systemantics', source_cover: '', category: 'books' },
++  { readwise_id: 90210003, text: 'We are what we repeatedly do. Excellence, then, is not an act, but a habit.', note: 'Gute Karte für tägliche Wiederholung — fragt nach der Quelle (oft Aristoteles zugeschrieben, eigentlich Will Durant).', source_title: 'The Story of Philosophy', source_author: 'Will Durant', source_url: 'https://readwise.io/bookreview/durant', source_cover: '', category: 'books' },
++  { readwise_id: 90210004, text: 'The best way to predict the future is to invent it.', note: '', source_title: 'Alan Kay at PARC', source_author: 'Alan Kay', source_url: 'https://readwise.io/articles/alankay', source_cover: '', category: 'articles' },
++  { readwise_id: 90210005, text: 'Spaced repetition is the deliberate use of the spacing effect: reviewing material at increasing intervals so that each review lands just before you would have forgotten. The cost is small and the payoff compounds — knowledge that would have evaporated becomes permanent at remarkably little ongoing effort.', note: 'Direkt relevant für diese App. Vielleicht eine Cloze-Karte: {{c1::spacing effect}}.', source_title: 'How to Remember Anything Forever-ish', source_author: 'Nicky Case', source_url: 'https://ncase.me/remember/', source_cover: '', category: 'articles' }
++];
++
++function buildHighlight(m) {
++  return {
++    id: 'rw_' + m.readwise_id, readwise_id: m.readwise_id, text: m.text, note: m.note || '',
++    source_title: m.source_title || '', source_author: m.source_author || '', source_url: m.source_url || '',
++    source_cover: m.source_cover || '', highlighted_at: m.highlighted_at || nowISO(), category: m.category || '',
++    readwise_url: m.readwise_url || ('https://readwise.io/highlights/' + m.readwise_id),
++    status: 'inbox', loadedAt: nowISO(), updatedAt: nowISO()
++  };
++}
++function seedIfEmpty() {
++  return idbAll('highlights').then(function (all) {
++    if (all.length > 0) return;
++    var chain = Promise.resolve();
++    MOCK.forEach(function (m) { chain = chain.then(function () { return idbPut('highlights', buildHighlight(m)); }); });
++    return chain;
++  });
++}
++
++/* ============================================================
++   UTIL
++   ============================================================ */
++function esc(s) {
++  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
++}
++function slugify(s) {
++  return String(s || 'note').toLowerCase().trim().replace(/[^a-z0-9äöüß\s_-]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-').slice(0, 60) || 'note';
++}
++function byId(id) { return document.getElementById(id); }
++function loading(on) { byId('loadingBar').classList.toggle('on', on); }
++
++function toast(msg, type) {
++  var box = byId('toasts');
++  var el = document.createElement('div');
++  el.className = 'toast ' + (type || '');
++  el.textContent = msg;
++  box.appendChild(el);
++  setTimeout(function () {
++    el.style.transition = 'opacity .3s, transform .3s';
++    el.style.opacity = '0'; el.style.transform = 'translateY(10px)';
++    setTimeout(function () { el.remove(); }, 320);
++  }, 3800);
++}
++
++/* ============================================================
++   ANKICONNECT  (ankiRequest + buildMedienFeld unverändert)
++   ============================================================ */
++function ankiRequest(action, params) {
++  return fetch(ANKI_ENDPOINT, {
++    method: 'POST',
++    headers: { 'Content-Type': 'application/json' },
++    body: JSON.stringify({ action: action, version: 6, params: params || {} })
++  }).then(function (r) {
++    if (!r.ok) throw new Error('HTTP ' + r.status);
++    return r.json().catch(function () { throw new Error('Ungültige AnkiConnect-Antwort'); });
++  });
++}
++function buildMedienFeld(h) {
++  var lines = [];
++  if (h.source_author) lines.push('Autor: ' + h.source_author);
++  if (h.source_title) lines.push('Full Title: ' + h.source_title);
++  if (h.category) lines.push('Category: ' + h.category);
++  if (h.source_url) lines.push('<a href="' + h.source_url + '">📚 Alle Highlights dieser Quelle</a>');
++  if (h.source_cover) lines.push('<img src="' + h.source_cover + '" style="max-width:120px">');
++  return lines.join('\n');
++}
++
++function ankiOfflineMsg(err) {
++  var m = String(err && err.message || err);
++  if (m.indexOf('Failed to fetch') >= 0 || m.indexOf('NetworkError') >= 0) return 'AnkiConnect nicht erreichbar — läuft Anki mit dem Plugin?';
++  return 'Anki-Fehler: ' + m;
++}
++
++/* ---- Mastery push ---- */
++function buildMasteryNote(h, fields, deck) {
++  return {
++    deckName: deck,
++    modelName: MODELS.mastery,
++    fields: {
++      Frage: fields.frage,
++      Antwort: fields.antwort,
++      Zitat: '„' + h.text + '" (' + h.source_author + ', ' + h.source_title + ') <a href="' + h.readwise_url + '">📖 Readwise</a>',
++      Notizen: fields.notizen || h.note || '',
++      Medien: buildMedienFeld(h)
++    },
++    tags: ['readwise-inbox']
++  };
++}
++
++function pushMastery(h, fields) {
++  var deck = config.mastery_deck || 'Mastery';
++  loading(true);
++  return ankiRequest('version').then(function () {
++    return ankiRequest('addNote', { note: buildMasteryNote(h, fields, deck) });
++  }).then(function (resp) {
++    if (resp && resp.error) throw new Error(resp.error);
++    var card = { id: 'card_' + Date.now(), highlight_id: h.id, template: 'mastery', fields: fields, deck: deck, anki_note_id: resp ? resp.result : null, pushed_at: nowISO(), createdAt: nowISO() };
++    return idbPut('cards', card).then(function () { return markProcessed(h.id); });
++  }).then(function () {
++    loading(false);
++    toast('✓ Mastery Card an Anki gesendet (Deck: ' + deck + ')', 'ok');
++    closeModal('masteryModal');
++    return renderAll();
++  }).catch(function (err) { loading(false); toast(ankiOfflineMsg(err), 'err'); });
++}
++
++/* ---- Memrise notes ---- */
++function buildMemriseNote(h, subtype, obj, deck) {
++  var rw = '<a href="' + h.readwise_url + '">📖 Readwise</a>';
++  if (subtype === 'cloze') {
++    return {
++      deckName: deck, modelName: MODELS.cloze,
++      fields: { Text: obj.text, Choices: obj.choices || '', Attributes: obj.attributes || '', Extra: obj.extra || '', 'Extra 2': rw, Audio: '', Mems: '' },
++      tags: ['readwise-inbox']
++    };
++  }
++  // mc + tapping share the MultipleChoice+Typing preset
++  return {
++    deckName: deck, modelName: subtype === 'tapping' ? MODELS.tapping : MODELS.mc,
++    fields: { Learnable: obj.learnable, Definition: obj.definition || '', Choices: obj.choices || '', Attributes: obj.attributes || '', Extra: obj.extra || '', 'Extra 2': rw, Audio: '', Mems: '' },
++    tags: ['readwise-inbox']
++  };
++}
++
++function pushMemrise(h, subtype, cards) {
++  var deck = config.memrise_deck || 'Memrise Inbox';
++  loading(true);
++  return ankiRequest('version').then(function () {
++    var notes = cards.map(function (c) { return buildMemriseNote(h, subtype, c, deck); });
++    return ankiRequest('addNotes', { notes: notes });
++  }).then(function (resp) {
++    if (resp && resp.error) throw new Error(resp.error);
++    var ids = resp && resp.result ? resp.result : [];
++    var ok = ids.filter(function (x) { return x != null; }).length;
++    var chain = Promise.resolve();
++    cards.forEach(function (c, i) {
++      chain = chain.then(function () {
++        return idbPut('cards', { id: 'card_' + Date.now() + '_' + i, highlight_id: h.id, template: subtype, fields: c, deck: deck, anki_note_id: ids[i] || null, pushed_at: nowISO(), createdAt: nowISO() });
++      });
++    });
++    return chain.then(function () { return markProcessed(h.id); }).then(function () { return ok; });
++  }).then(function (ok) {
++    loading(false);
++    toast('✓ ' + ok + ' Memrise-Karte(n) an Anki gesendet (Deck: ' + deck + ')', 'ok');
++    closeModal('memriseModal');
++    return renderAll();
++  }).catch(function (err) { loading(false); toast(ankiOfflineMsg(err), 'err'); });
++}
++
++/* ============================================================
++   STATUS (idempotent)
++   ============================================================ */
++function markProcessed(id) { return setStatus(id, 'processed'); }
++function setStatus(id, status) {
++  return idbGet('highlights', id).then(function (h) {
++    if (!h) return;
++    if (h.status === 'processed' || h.status === 'skipped') return;
++    h.status = status; h.updatedAt = nowISO();
++    return idbPut('highlights', h);
++  });
++}
++
++/* ============================================================
++   READWISE FETCH  (Logik unverändert)
++   ============================================================ */
++function mapReadwise(r) {
++  return {
++    id: 'rw_' + r.id, readwise_id: r.id, text: r.content || r.text || '', note: r.note || '',
++    source_title: r.title || '', source_author: r.author || '', source_url: r.source_url || '',
++    source_cover: r.cover_image_url || '', highlighted_at: r.highlighted_at || nowISO(), category: r.category || '',
++    readwise_url: r.url || '', status: 'inbox', loadedAt: nowISO(), updatedAt: nowISO()
++  };
++}
++function fetchReadwise() {
++  var token = getToken();
++  if (!token) { toast('Bitte Readwise-Token in den Einstellungen eintragen.', 'warn'); return Promise.resolve(); }
++  setStatusDot('rwStatus', '', 'Lade…');
++  loading(true);
++  var added = 0;
++  var cursor = config.last_readwise_cursor || '';
++  function page(cur) {
++    var url = READWISE_API + '?category=highlight' + (cur ? '&pageCursor=' + encodeURIComponent(cur) : '');
++    return fetch(url, { headers: { Authorization: 'Token ' + token } }).then(function (r) {
++      if (r.status === 401) throw new Error('401 — Token ungültig');
++      if (!r.ok) throw new Error('HTTP ' + r.status);
++      return r.json();
++    }).then(function (data) {
++      var results = data.results || [];
++      var chain = Promise.resolve();
++      results.forEach(function (raw) {
++        chain = chain.then(function () {
++          return idbGet('highlights', 'rw_' + raw.id).then(function (existing) {
++            if (existing) return;
++            added++; return idbPut('highlights', mapReadwise(raw));
++          });
++        });
++      });
++      return chain.then(function () {
++        config.last_readwise_cursor = data.nextPageCursor || '';
++        return saveConfig().then(function () { return data.nextPageCursor ? data.nextPageCursor : null; });
++      });
++    });
++  }
++  return page(cursor).then(function (next) {
++    loading(false);
++    setStatusDot('rwStatus', 'ok', added + ' neu');
++    if (added > 0) toast('✓ ' + added + ' neue Highlights geladen.', 'ok');
++    else toast('Keine neuen Highlights' + (next ? ' auf dieser Seite — erneut klicken für mehr.' : '.'), 'warn');
++    return renderAll();
++  }).catch(function (err) {
++    loading(false);
++    var m = String(err && err.message || err);
++    setStatusDot('rwStatus', 'bad', 'Fehler');
++    if (m.indexOf('Failed to fetch') >= 0) toast('Readwise nicht erreichbar (CORS/Netz). Token & Verbindung prüfen.', 'err');
++    else toast('Readwise-Fehler: ' + m, 'err');
++  });
++}
++function setStatusDot(id, cls, txt) {
++  var el = byId(id);
++  el.className = 'status-dot ' + (cls || '');
++  el.querySelector('.txt').textContent = txt;
++}
++
++/* ============================================================
++   RENDER INBOX
++   ============================================================ */
++function statusPill(status) {
++  if (status === 'processed') return '<span class="pill done">✓ Done</span>';
++  if (status === 'skipped') return '<span class="pill skip">Übersprungen</span>';
++  return '<span class="pill inbox">Inbox ▸</span>';
++}
++function renderInbox(highlights) {
++  var feed = byId('feed');
++  feed.innerHTML = '';
++  highlights.sort(function (a, b) {
++    var ra = a.status === 'inbox' ? 0 : 1, rb = b.status === 'inbox' ? 0 : 1;
++    if (ra !== rb) return ra - rb;
++    return (b.highlighted_at || '').localeCompare(a.highlighted_at || '');
++  });
++  if (highlights.length === 0) {
++    feed.innerHTML = '<div class="empty"><div class="big">✨</div><h3>Inbox leer</h3><p>Keine Highlights vorhanden.</p><button class="btn gold" onclick="goTab(\'settings\')">↓ Highlights laden</button></div>';
++    return;
++  }
++  var inboxCount = highlights.filter(function (h) { return h.status === 'inbox'; }).length;
++  if (inboxCount === 0) {
++    var done = document.createElement('div');
++    done.className = 'empty';
++    done.innerHTML = '<div class="big">✨</div><h3>Inbox leer — alle Highlights verarbeitet.</h3><p>Gut gemacht. Verarbeitete Karten siehst du unten.</p><button class="btn gold" id="reloadBtn">↻ Neue Highlights laden</button>';
++    feed.appendChild(done);
++    var rb = done.querySelector('#reloadBtn');
++    if (rb) rb.addEventListener('click', fetchReadwise);
++  }
++  highlights.forEach(function (h) { feed.appendChild(buildCard(h)); });
++  setupClamps();
++}
++function buildCard(h) {
++  var card = document.createElement('article');
++  card.className = 'hl-card' + (h.status === 'processed' ? ' done' : h.status === 'skipped' ? ' skipped' : '');
++  card.dataset.id = h.id;
++  var noteHtml = h.note ? '<div class="hl-note"><span class="ic">💬</span><span>' + esc(h.note) + '</span></div>' : '';
++  var disabled = h.status !== 'inbox' ? 'disabled' : '';
++  card.innerHTML =
++    '<div class="hl-top">' +
++      '<div class="hl-src"><span class="t">' + esc(h.source_title || 'Ohne Titel') + '</span>' +
++        (h.source_author ? '<div class="a">' + esc(h.source_author) + '</div>' : '') +
++      '</div>' + statusPill(h.status) +
++    '</div>' +
++    '<div class="hl-text clamped"><span class="qm">„</span>' + esc(h.text) + '<span class="qm">"</span></div>' +
++    '<span class="hl-more">… mehr anzeigen</span>' +
++    noteHtml +
++    '<div class="hl-actions">' +
++      '<button class="act primary" data-act="card" ' + disabled + '>🃏 Karteikarte</button>' +
++      '<button class="act secondary" data-act="note" ' + disabled + '>📝 Atomic Note</button>' +
++      '<button class="act" data-act="skip" ' + disabled + '>⏭ Skip</button>' +
++    '</div>';
++  var more = card.querySelector('.hl-more');
++  more.addEventListener('click', function () {
++    var t = card.querySelector('.hl-text');
++    var open = t.classList.toggle('clamped') === false;
++    more.textContent = open ? 'weniger anzeigen' : '… mehr anzeigen';
++  });
++  if (h.status === 'inbox') {
++    card.querySelector('[data-act="card"]').addEventListener('click', function () { openTypeChooser(h); });
++    card.querySelector('[data-act="note"]').addEventListener('click', function () { openNoteModal(h); });
++    card.querySelector('[data-act="skip"]').addEventListener('click', function () { doSkip(h); });
++  }
++  return card;
++}
++function setupClamps() {
++  document.querySelectorAll('.hl-card').forEach(function (card) {
++    var t = card.querySelector('.hl-text');
++    var more = card.querySelector('.hl-more');
++    if (t.scrollHeight - t.clientHeight > 4) more.classList.add('show');
++  });
++}
++function doSkip(h) { setStatus(h.id, 'skipped').then(function () { toast('Übersprungen.', 'warn'); return renderAll(); }); }
++
++/* ============================================================
++   STEP A — TYPE CHOOSER
++   ============================================================ */
++function openTypeChooser(h) {
++  currentHighlightId = h.id;
++  openModal('typeModal');
++}
++
++/* ============================================================
++   MASTERY MODAL
++   ============================================================ */
++function suggestFrage(h) {
++  var who = h.source_author || h.source_title || 'die Quelle';
++  return 'Was sagt ' + who + ' über das Kernkonzept dieses Highlights?';
++}
++function openMasteryModal(h) {
++  byId('mFrage').value = suggestFrage(h);
++  byId('mAntwort').value = h.text;
++  byId('masteryDeckLabel').textContent = config.mastery_deck || 'Mastery';
++  byId('cZitat').innerHTML = '<div class="quote">„' + esc(h.text) + '"</div>' +
++    '<div>(' + esc(h.source_author || '?') + ', ' + esc(h.source_title || '?') + ') ' +
++    (h.readwise_url ? '<a href="' + esc(h.readwise_url) + '" target="_blank" rel="noopener">📖 Readwise →</a>' : '') + '</div>';
++  byId('cNotizen').value = h.note || '';
++  var med = [];
++  if (h.source_author) med.push('Autor: ' + esc(h.source_author));
++  if (h.source_title) med.push('Titel: ' + esc(h.source_title));
++  if (h.category) med.push('Kategorie: ' + esc(h.category));
++  var medHtml = med.join(' &nbsp;|&nbsp; ');
++  if (h.source_url) medHtml += '<br><a href="' + esc(h.source_url) + '" target="_blank" rel="noopener">📚 Alle Highlights dieser Quelle →</a>';
++  if (h.source_cover) medHtml += '<img class="cover-thumb" src="' + esc(h.source_cover) + '" alt="cover">';
++  byId('cMedien').innerHTML = medHtml || '—';
++  openModal('masteryModal');
++}
++function sendMastery() {
++  idbGet('highlights', currentHighlightId).then(function (h) {
++    if (!h) return;
++    var fields = { frage: byId('mFrage').value.trim(), antwort: byId('mAntwort').value.trim(), notizen: byId('cNotizen').value.trim() };
++    if (!fields.frage || !fields.antwort) { toast('Frage und Antwort ausfüllen.', 'warn'); return; }
++    pushMastery(h, fields);
++  });
++}
++
++/* ============================================================
++   MEMRISE MODAL  (HITL)
++   ============================================================ */
++function buildMemrisePrompt(h, subtype) {
++  var base = 'Highlight:\n"' + h.text + '"\nQuelle: ' + h.source_author + ' — ' + h.source_title + '\n\n';
++  if (subtype === 'mc') {
++    return base + 'Erstelle eine MC+Typing Anki-Karte im Format:\nLearnable: [Begriff]\nDefinition: [Frage]\nChoices: [richtig|falsch1|falsch2|falsch3]\nAttributes: [Thema]\nExtra: [Erklärung]\n\nNur JSON, kein Fließtext.';
++  }
++  if (subtype === 'tapping') {
++    return base + 'Erstelle eine Tapping+Typing Anki-Karte im Format:\nLearnable Sentence: [vollständiger Satz]\nDefinition: [Frage]\nChoices: [Satz korrekt|Variante1|Variante2]\nAttributes: [Thema]\nExtra: [Erklärung]\n\nNur JSON, kein Fließtext.';
++  }
++  if (subtype === 'cloze') {
++    return base + 'Erstelle eine Cloze Anki-Karte im Format:\nText: [Satz mit {{c1::Lücke}}]\nChoices: [richtig|falsch1|falsch2]\nAttributes: [Thema]\nExtra: [Erklärung]\n\nNur JSON, kein Fließtext.';
++  }
++}
++function openMemriseModal(h) {
++  memSubtype = 'mc';
++  memCards = [];
++  document.querySelectorAll('#memSeg button').forEach(function (b) { b.classList.toggle('active', b.dataset.sub === 'mc'); });
++  byId('memResult').value = '';
++  byId('memPreview').innerHTML = '';
++  byId('btnSendMemrise').disabled = true;
++  byId('memDeckHint').textContent = 'Ziel-Deck: ' + (config.memrise_deck || 'Memrise Inbox');
++  refreshPrompt(h);
++  openModal('memriseModal');
++}
++function refreshPrompt(h) {
++  var labels = { mc: 'Prompt für KI — Memrise MC+Typing', tapping: 'Prompt für KI — Memrise Tapping+Typing', cloze: 'Prompt für KI — Memrise Cloze' };
++  byId('promptLbl').textContent = labels[memSubtype];
++  byId('promptText').textContent = buildMemrisePrompt(h, memSubtype);
++}
++function normalizeKeys(obj) {
++  var out = {};
++  Object.keys(obj).forEach(function (k) {
++    var nk = k.toLowerCase().trim();
++    if (nk === 'learnable sentence') nk = 'learnable';
++    if (nk === 'text' || nk === 'cloze') nk = 'text';
++    out[nk] = typeof obj[k] === 'string' ? obj[k] : String(obj[k]);
++  });
++  return out;
++}
++function parseMemriseResult() {
++  var raw = byId('memResult').value.trim();
++  byId('memPreview').innerHTML = '';
++  byId('btnSendMemrise').disabled = true;
++  memCards = [];
++  if (!raw) { toast('Bitte zuerst das KI-Ergebnis einfügen.', 'warn'); return; }
++  var txt = raw.replace(/```json/gi, '').replace(/```/g, '').trim();
++  // grab first {...} or [...] block
++  var first = txt.search(/[\[{]/);
++  if (first > 0) txt = txt.slice(first);
++  var data;
++  try { data = JSON.parse(txt); }
++  catch (e) {
++    byId('memPreview').innerHTML = '<div class="parse-err">JSON konnte nicht gelesen werden: ' + esc(e.message) + '. Stelle sicher, dass die KI reines JSON zurückgibt.</div>';
++    return;
++  }
++  var arr = Array.isArray(data) ? data : [data];
++  var valid = [];
++  arr.forEach(function (o) {
++    if (!o || typeof o !== 'object') return;
++    var n = normalizeKeys(o);
++    if (memSubtype === 'cloze') {
++      if (n.text && n.text.indexOf('{{c') >= 0) valid.push(n);
++    } else {
++      if (n.learnable) valid.push(n);
++    }
++  });
++  if (valid.length === 0) {
++    byId('memPreview').innerHTML = '<div class="parse-err">Keine gültigen Karten gefunden. Erwartet: ' + (memSubtype === 'cloze' ? '"Text" mit {{c1::…}}' : '"Learnable" je Karte') + '.</div>';
++    return;
++  }
++  memCards = valid;
++  renderMemPreview();
++  byId('btnSendMemrise').disabled = false;
++  toast('✓ ' + valid.length + ' Karte(n) erkannt.', 'ok');
++}
++function renderMemPreview() {
++  var box = byId('memPreview');
++  box.innerHTML = '<div class="step-label"><span class="num">3</span> Vorschau (' + memCards.length + ')</div>';
++  memCards.forEach(function (c, idx) {
++    var el = document.createElement('div');
++    el.className = 'mcard';
++    var rows = '';
++    var order = memSubtype === 'cloze' ? ['text', 'choices', 'attributes', 'extra'] : ['learnable', 'definition', 'choices', 'attributes', 'extra'];
++    order.forEach(function (k) {
++      if (c[k]) rows += '<div class="mc-row"><span class="k">' + k + ':</span> <span class="v">' + esc(c[k]) + '</span></div>';
++    });
++    el.innerHTML = rows + '<button class="mc-x" data-i="' + idx + '">×</button>';
++    el.querySelector('.mc-x').addEventListener('click', function () {
++      memCards.splice(idx, 1);
++      if (memCards.length === 0) { byId('memPreview').innerHTML = ''; byId('btnSendMemrise').disabled = true; }
++      else renderMemPreview();
++    });
++    box.appendChild(el);
++  });
++}
++function sendMemrise() {
++  if (memCards.length === 0) { toast('Keine Karten zum Senden.', 'warn'); return; }
++  idbGet('highlights', currentHighlightId).then(function (h) {
++    if (!h) return;
++    pushMemrise(h, memSubtype, memCards);
++  });
++}
++
++/* ============================================================
++   ATOMIC NOTE (ZETTEL) MODAL
++   ============================================================ */
++function updatePath() {
++  var p = byId('zParent').value.trim();
++  var k = byId('zKuerzel').value.trim();
++  var el = byId('zPath');
++  if (!p && !k) { el.innerHTML = '<span class="ph">parent.kürzel — wird zum Pfad / Dateinamen</span>'; return; }
++  el.innerHTML = (p ? esc(p) : '<span class="ph">parent</span>') + '<span class="ph">.</span>' + (k ? '<b>' + esc(k) + '</b>' : '<span class="ph">kürzel</span>');
++}
++function openNoteModal(h) {
++  currentHighlightId = h.id;
++  byId('zParent').value = '';
++  var firstWords = h.text.split(/\s+/).slice(0, 4).join(' ').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
++  byId('zKuerzel').value = firstWords.slice(0, 24);
++  byId('zTitel').value = (h.source_author ? h.source_author + ' — ' : '') + h.text.split(/\s+/).slice(0, 6).join(' ') + (h.text.split(/\s+/).length > 6 ? '…' : '');
++  byId('zSummary').value = '';
++  byId('zAnm').value = h.note || '';
++  byId('zZitat').value = h.text;
++  byId('zSrc').value = (h.source_author || '?') + ': ' + (h.source_title || '?');
++  updatePath();
++  refreshParentList();
++  openModal('noteModal');
++}
++function refreshParentList() {
++  idbAll('zettels').then(function (zs) {
++    var seen = {}, opts = '';
++    zs.forEach(function (z) { if (z.p && !seen[z.p]) { seen[z.p] = 1; opts += '<option value="' + esc(z.p) + '">'; } });
++    byId('parentList').innerHTML = opts;
++  });
++}
++function buildZettelFromModal(h) {
++  return {
++    id: 'zettel_' + Date.now(),
++    highlight_id: h.id,
++    p: byId('zParent').value.trim(),
++    k: byId('zKuerzel').value.trim(),
++    t: byId('zTitel').value.trim() || 'Ohne Titel',
++    q: byId('zZitat').value.trim(),
++    n: byId('zAnm').value.trim(),
++    s: byId('zSummary').value.trim(),
++    source_ref: (h.source_author || '?') + ': ' + (h.source_title || '?'),
++    readwise_url: h.readwise_url || '',
++    obsidian_exported: false,
++    createdAt: nowISO()
++  };
++}
++function saveNote(alsoZip) {
++  idbGet('highlights', currentHighlightId).then(function (h) {
++    if (!h) return;
++    var z = buildZettelFromModal(h);
++    if (!z.t) { toast('Titel ausfüllen.', 'warn'); return; }
++    return idbPut('zettels', z).then(function () { return markProcessed(h.id); })
++      .then(function () {
++        toast('✓ Atomic Note gespeichert.', 'ok');
++        closeModal('noteModal');
++        return renderAll();
++      }).then(function () { if (alsoZip) return exportZip(); });
++  });
++}
++
++/* ============================================================
++   ZETTELKASTEN RENDER
++   ============================================================ */
++function renderZettels(zettels) {
++  var list = byId('zettelList');
++  list.innerHTML = '';
++  if (zettels.length === 0) {
++    list.innerHTML = '<div class="empty"><div class="big">🗂</div><h3>Noch keine Notizen</h3><p>Erstelle Atomic Notes aus deinen Highlights in der Inbox.</p></div>';
++    byId('zExportTop').style.display = 'none';
++    return;
++  }
++  byId('zExportTop').style.display = '';
++  zettels.sort(function (a, b) { return (b.createdAt || '').localeCompare(a.createdAt || ''); });
++  zettels.forEach(function (z) {
++    var el = document.createElement('div');
++    el.className = 'zettel';
++    var path = (z.p || '') + (z.p && z.k ? '.' : '') + (z.k || '');
++    el.innerHTML =
++      (path ? '<div class="zpath">' + esc(path) + '</div>' : '') +
++      '<h4>' + esc(z.t || 'Ohne Titel') + '</h4>' +
++      (z.s ? '<div class="zsum">' + esc(z.s) + '</div>' : '') +
++      (z.n ? '<div class="zanm">' + esc(z.n) + '</div>' : '') +
++      (z.q ? '<div class="zquote">„' + esc(z.q) + '"</div>' : '') +
++      '<div class="zmeta"><span class="tag">📖 ' + esc(z.source_ref || '') + '</span>' +
++        (z.obsidian_exported ? '<span class="tag" style="color:var(--green);">✓ exportiert</span>' : '') +
++      '</div>';
++    list.appendChild(el);
++  });
++}
++
++/* ============================================================
++   OBSIDIAN ZIP EXPORT
++   ============================================================ */
++function zettelMarkdown(z) {
++  var md = '';
++  md += '---\n';
++  md += 'title: "' + (z.t || '').replace(/"/g, '\\"') + '"\n';
++  md += 'type: zettel\n';
++  md += '---\n';
++  md += '# ' + (z.t || '') + '\n\n';
++  md += '> [!abstract] Zusammenfassung\n';
++  md += '> ' + (z.s || '').replace(/\n/g, '\n> ') + '\n\n';
++  md += '## 📝 Anmerkung\n';
++  md += (z.n || '') + '\n\n';
++  md += '## 📖 Quelle\n';
++  md += (z.q || '') + '\n';
++  if (z.readwise_url) md += '[📖 Original in Readwise](' + z.readwise_url + ')\n';
++  return md;
++}
++function exportZip() {
++  if (typeof JSZip === 'undefined') { toast('JSZip nicht geladen.', 'err'); return Promise.resolve(); }
++  loading(true);
++  return idbAll('zettels').then(function (zettels) {
++    if (zettels.length === 0) { loading(false); toast('Keine Zettel zum Exportieren.', 'warn'); return; }
++    var zip = new JSZip();
++    var usedNames = {};
++    var chain = Promise.resolve();
++    zettels.forEach(function (z) {
++      var base = z.k ? slugify(z.k) : slugify(z.t);
++      var name = base;
++      while (usedNames[name]) { name = name + '-1'; }
++      usedNames[name] = 1;
++      zip.file(name + '.md', zettelMarkdown(z));
++      if (!z.obsidian_exported) { z.obsidian_exported = true; chain = chain.then(function () { return idbPut('zettels', z); }); }
++    });
++    return chain.then(function () { return zip.generateAsync({ type: 'blob' }); }).then(function (blob) {
++      var url = URL.createObjectURL(blob);
++      var a = document.createElement('a');
++      a.href = url; a.download = 'readwise-zettels.zip';
++      document.body.appendChild(a); a.click(); a.remove();
++      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
++      loading(false);
++      toast('✓ ' + zettels.length + ' Zettel als ZIP exportiert.', 'ok');
++      return renderAll();
++    });
++  }).catch(function (err) { loading(false); toast('Export-Fehler: ' + (err && err.message || err), 'err'); });
++}
++
++/* ============================================================
++   RENDER ALL + COUNTS
++   ============================================================ */
++function renderAll() {
++  return Promise.all([idbAll('highlights'), idbAll('zettels')]).then(function (res) {
++    var highlights = res[0], zettels = res[1];
++    renderInbox(highlights.slice());
++    renderZettels(zettels.slice());
++    var inboxCount = highlights.filter(function (h) { return h.status === 'inbox'; }).length;
++    byId('cntInbox').textContent = inboxCount;
++    byId('cntInboxM').textContent = inboxCount;
++    byId('cntZettel').textContent = zettels.length;
++    byId('cntZettelM').textContent = zettels.length;
++  });
++}
++
++/* ============================================================
++   MODAL / NAV HELPERS
++   ============================================================ */
++function openModal(id) { byId(id).classList.add('open'); document.body.style.overflow = 'hidden'; }
++function closeModal(id) {
++  byId(id).classList.remove('open');
++  if (!document.querySelector('.modal-back.open')) document.body.style.overflow = '';
++}
++function goTab(tab) {
++  document.querySelectorAll('.tab').forEach(function (t) { t.classList.toggle('active', t.id === 'tab-' + tab); });
++  document.querySelectorAll('.nav-btn').forEach(function (b) { b.classList.toggle('active', b.dataset.tab === tab); });
++  closeDrawer();
++  window.scrollTo({ top: 0 });
++}
++window.goTab = goTab;
++function openDrawer() { byId('drawer').classList.add('open'); byId('drawerBack').classList.add('open'); }
++function closeDrawer() { byId('drawer').classList.remove('open'); byId('drawerBack').classList.remove('open'); }
++
++/* ============================================================
++   WIRE UP
++   ============================================================ */
++function withCurrentHighlight(fn) { idbGet('highlights', currentHighlightId).then(function (h) { if (h) fn(h); }); }
++
++function wireEvents() {
++  document.querySelectorAll('.nav-btn').forEach(function (b) { b.addEventListener('click', function () { goTab(b.dataset.tab); }); });
++  byId('hamburger').addEventListener('click', openDrawer);
++  byId('drawerBack').addEventListener('click', closeDrawer);
++
++  document.querySelectorAll('[data-close]').forEach(function (b) { b.addEventListener('click', function () { closeModal(b.dataset.close); }); });
++  ['typeModal', 'masteryModal', 'memriseModal', 'noteModal'].forEach(function (id) {
++    byId(id).addEventListener('click', function (e) { if (e.target === byId(id)) closeModal(id); });
++  });
++  document.addEventListener('keydown', function (e) {
++    if (e.key === 'Escape') { ['typeModal', 'masteryModal', 'memriseModal', 'noteModal'].forEach(closeModal); closeDrawer(); }
++  });
++
++  // type chooser
++  byId('chooseMastery').addEventListener('click', function () { closeModal('typeModal'); withCurrentHighlight(openMasteryModal); });
++  byId('chooseMemrise').addEventListener('click', function () { closeModal('typeModal'); withCurrentHighlight(openMemriseModal); });
++
++  // mastery
++  byId('btnSendAnki').addEventListener('click', sendMastery);
++
++  // memrise
++  document.querySelectorAll('#memSeg button').forEach(function (b) {
++    b.addEventListener('click', function () {
++      document.querySelectorAll('#memSeg button').forEach(function (x) { x.classList.remove('active'); });
++      b.classList.add('active');
++      memSubtype = b.dataset.sub;
++      byId('memPreview').innerHTML = ''; byId('btnSendMemrise').disabled = true; memCards = [];
++      withCurrentHighlight(refreshPrompt);
++    });
++  });
++  byId('btnCopyPrompt').addEventListener('click', function () {
++    var txt = byId('promptText').textContent;
++    if (navigator.clipboard && navigator.clipboard.writeText) {
++      navigator.clipboard.writeText(txt).then(function () { toast('📋 Prompt kopiert.', 'ok'); }).catch(function () { fallbackCopy(txt); });
++    } else fallbackCopy(txt);
++  });
++  byId('btnParse').addEventListener('click', parseMemriseResult);
++  byId('btnSendMemrise').addEventListener('click', sendMemrise);
++
++  // note / zettel
++  byId('zParent').addEventListener('input', updatePath);
++  byId('zKuerzel').addEventListener('input', updatePath);
++  byId('btnSaveNote').addEventListener('click', function () { saveNote(false); });
++  byId('btnSaveNoteZip').addEventListener('click', function () { saveNote(true); });
++
++  // settings
++  var rw = byId('rwToken'); rw.value = getToken();
++  rw.addEventListener('change', function () { setToken(rw.value.trim()); toast('Token gespeichert.', 'ok'); });
++  var gt = byId('gistToken'); gt.value = getGistToken();
++  gt.addEventListener('change', function () { setGistToken(gt.value.trim()); });
++  var gi = byId('gistId'); gi.value = config.gist_id || '';
++  gi.addEventListener('change', function () { config.gist_id = gi.value.trim(); saveConfig(); });
++
++  var md = byId('masteryDeck'); md.value = config.mastery_deck;
++  md.addEventListener('change', function () { config.mastery_deck = md.value.trim() || 'Mastery'; saveConfig(); });
++  var me = byId('memriseDeck'); me.value = config.memrise_deck;
++  me.addEventListener('change', function () { config.memrise_deck = me.value.trim() || 'Memrise Inbox'; saveConfig(); });
++
++  byId('btnFetch').addEventListener('click', fetchReadwise);
++  byId('btnZipExport').addEventListener('click', exportZip);
++  byId('zExportTop').addEventListener('click', exportZip);
++
++  byId('btnAnkiTest').addEventListener('click', function () {
++    setStatusDot('ankiStatus', '', 'Teste…');
++    loading(true);
++    ankiRequest('version').then(function (resp) {
++      loading(false);
++      setStatusDot('ankiStatus', 'ok', 'Verbunden (v' + (resp && resp.result) + ')');
++      toast('✓ AnkiConnect erreichbar.', 'ok');
++    }).catch(function () {
++      loading(false);
++      setStatusDot('ankiStatus', 'bad', 'Nicht erreichbar');
++      toast('AnkiConnect nicht erreichbar — Anki + Plugin prüfen.', 'err');
++    });
++  });
++  byId('btnGistSync').addEventListener('click', function () { toast('Gist-Sync kommt in Phase 2.', 'warn'); });
++}
++
++function fallbackCopy(txt) {
++  var ta = document.createElement('textarea');
++  ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0';
++  document.body.appendChild(ta); ta.select();
++  try { document.execCommand('copy'); toast('📋 Prompt kopiert.', 'ok'); } catch (e) { toast('Kopieren nicht möglich.', 'err'); }
++  ta.remove();
++}
++
++/* ============================================================
++   BOOT
++   ============================================================ */
++function boot() {
++  openDB().then(function (d) { db = d; return loadConfig(); })
++    .then(function () { return seedIfEmpty(); })
++    .then(function () { wireEvents(); return renderAll(); })
++    .catch(function (err) { console.error(err); toast('Initialisierung fehlgeschlagen: ' + (err && err.message || err), 'err'); });
++}
++boot();
++</script>
++</body>
++</html>
+diff --git a/src/AnkiConnect.ts b/src/AnkiConnect.ts
+new file mode 100644
+index 0000000..b4b1a9a
+--- /dev/null
++++ b/src/AnkiConnect.ts
+@@ -0,0 +1,97 @@
++import { Highlight } from "./types";
++
++export const ANKI_CONNECT_ENDPOINT = "http://localhost:8765";
++
++export const MODELS = {
++  mastery: "Mastery-Notiztyp",
++  mc: "Memrise (Lτ) Preset [Translation+Listenting | MultipleChoice+Typing] v5.1",
++  tapping: "Memrise (Lτ) Preset [Translation+Listenting | Tapping+Typing] v5.1",
++  cloze: "Memrise (Lτ) Cloze Template v5.1"
++} as const;
++
++export interface MasteryInput {
++  frage: string;
++  antwort: string;
++  notizen: string;
++}
++
++export interface AnkiNote {
++  deckName: string;
++  modelName: string;
++  fields: Record<string, string>;
++  options: { allowDuplicate: boolean };
++  tags: string[];
++}
++
++interface AnkiResponse<T> {
++  result: T;
++  error: string | null;
++}
++
++function escapeHtml(value: string): string {
++  return value
++    .replace(/&/g, "&amp;")
++    .replace(/</g, "&lt;")
++    .replace(/>/g, "&gt;")
++    .replace(/"/g, "&quot;");
++}
++
++export function buildMedienFeld(highlight: Highlight): string {
++  const parts: string[] = [];
++  if (highlight.source_cover) {
++    parts.push(`<img src="${escapeHtml(highlight.source_cover)}" alt="Cover">`);
++  }
++  if (highlight.source_url) {
++    parts.push(`<a href="${escapeHtml(highlight.source_url)}">Quelle</a>`);
++  }
++  return parts.join("<br>");
++}
++
++export function buildZitatFeld(highlight: Highlight): string {
++  return `„${escapeHtml(highlight.text)}" (${escapeHtml(highlight.source_author)}, ${escapeHtml(highlight.source_title)}) <a href="${escapeHtml(highlight.readwise_url)}">📖 Readwise</a>`;
++}
++
++export class AnkiConnect {
++  async ankiRequest<T>(action: string, params: Record<string, unknown> = {}): Promise<T> {
++    const response = await fetch(ANKI_CONNECT_ENDPOINT, {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({ action, version: 6, params })
++    });
++
++    if (!response.ok) {
++      throw new Error(`AnkiConnect HTTP ${response.status}`);
++    }
++
++    const payload = await response.json() as AnkiResponse<T>;
++    if (payload.error) {
++      throw new Error(payload.error);
++    }
++    return payload.result;
++  }
++
++  async testConnection(): Promise<string> {
++    return this.ankiRequest<string>("version");
++  }
++
++  buildMasteryNote(deckName: string, highlight: Highlight, input: MasteryInput): AnkiNote {
++    return {
++      deckName,
++      modelName: MODELS.mastery,
++      fields: {
++        Frage: input.frage,
++        Antwort: input.antwort,
++        Zitat: buildZitatFeld(highlight),
++        Notizen: input.notizen,
++        Medien: buildMedienFeld(highlight)
++      },
++      options: { allowDuplicate: false },
++      tags: ["readwise-inbox", "mastery"]
++    };
++  }
++
++  async addMasteryNote(deckName: string, highlight: Highlight, input: MasteryInput): Promise<number> {
++    const note = this.buildMasteryNote(deckName, highlight, input);
++    return this.ankiRequest<number>("addNote", { note });
++  }
++}
+diff --git a/src/InboxState.ts b/src/InboxState.ts
+new file mode 100644
+index 0000000..e734266
+--- /dev/null
++++ b/src/InboxState.ts
+@@ -0,0 +1,187 @@
++import { App, normalizePath, TFile } from "obsidian";
++import { Highlight, HighlightStatus, InboxState, PluginSettings } from "./types";
++
++const CURRENT_SCHEMA_VERSION = 1;
++
++export const DEFAULT_STATE: InboxState = {
++  highlights: [],
++  cards_pending: [],
++  last_readwise_cursor: null,
++  updatedAt: new Date(0).toISOString(),
++  schemaVersion: CURRENT_SCHEMA_VERSION
++};
++
++function nowIso(): string {
++  return new Date().toISOString();
++}
++
++function asString(value: unknown, fallback = ""): string {
++  return typeof value === "string" ? value : fallback;
++}
++
++function normalizeStatus(value: unknown): HighlightStatus {
++  if (value === "processed" || value === "skipped" || value === "inbox") {
++    return value;
++  }
++  return "inbox";
++}
++
++export class InboxStateStore {
++  private state: InboxState = { ...DEFAULT_STATE, highlights: [], cards_pending: [] };
++
++  constructor(private app: App, private getSettings: () => PluginSettings) {}
++
++  getState(): InboxState {
++    return this.state;
++  }
++
++  getInboxHighlights(): Highlight[] {
++    return this.state.highlights.filter((highlight) => highlight.status === "inbox");
++  }
++
++  async load(): Promise<InboxState> {
++    const path = this.getStatePath();
++    const file = this.app.vault.getAbstractFileByPath(path);
++    if (!(file instanceof TFile)) {
++      this.state = this.normalizeState(null);
++      return this.state;
++    }
++
++    const raw = await this.app.vault.read(file);
++    const parsed = raw.trim().length > 0 ? JSON.parse(raw) : null;
++    this.state = this.normalizeState(parsed);
++    return this.state;
++  }
++
++  async save(): Promise<void> {
++    this.state.updatedAt = nowIso();
++    const path = this.getStatePath();
++    await this.ensureParentFolder(path);
++    const file = this.app.vault.getAbstractFileByPath(path);
++    const serialized = `${JSON.stringify(this.state, null, 2)}\n`;
++    if (file instanceof TFile) {
++      await this.app.vault.modify(file, serialized);
++    } else {
++      await this.app.vault.create(path, serialized);
++    }
++  }
++
++  upsertHighlights(incoming: Highlight[]): { added: number; updated: number } {
++    let added = 0;
++    let updated = 0;
++    const byId = new Map(this.state.highlights.map((highlight) => [highlight.id, highlight]));
++
++    for (const next of incoming) {
++      const existing = byId.get(next.id);
++      if (!existing) {
++        this.state.highlights.push(next);
++        byId.set(next.id, next);
++        added += 1;
++        continue;
++      }
++
++      const status = existing.status === "processed" || existing.status === "skipped" ? existing.status : "inbox";
++      Object.assign(existing, {
++        ...existing,
++        readwise_id: existing.readwise_id || next.readwise_id,
++        text: existing.text || next.text,
++        note: existing.note || next.note,
++        source_title: existing.source_title || next.source_title,
++        source_author: existing.source_author || next.source_author,
++        source_url: existing.source_url || next.source_url,
++        source_cover: existing.source_cover || next.source_cover,
++        highlighted_at: existing.highlighted_at || next.highlighted_at,
++        category: existing.category || next.category,
++        readwise_url: existing.readwise_url || next.readwise_url,
++        loadedAt: existing.loadedAt || next.loadedAt,
++        updatedAt: nowIso(),
++        status
++      });
++      updated += 1;
++    }
++
++    this.state.updatedAt = nowIso();
++    return { added, updated };
++  }
++
++  setCursor(cursor: string | null): void {
++    this.state.last_readwise_cursor = cursor;
++    this.state.updatedAt = nowIso();
++  }
++
++  async setStatus(id: string, status: HighlightStatus): Promise<boolean> {
++    const highlight = this.state.highlights.find((item) => item.id === id);
++    if (!highlight) {
++      return false;
++    }
++
++    if (highlight.status === status) {
++      return true;
++    }
++
++    if ((highlight.status === "processed" || highlight.status === "skipped") && status === "inbox") {
++      return true;
++    }
++
++    highlight.status = status;
++    highlight.updatedAt = nowIso();
++    await this.save();
++    return true;
++  }
++
++  private getStatePath(): string {
++    return normalizePath(this.getSettings().statePath || "readwise-inbox.json");
++  }
++
++  private normalizeState(raw: unknown): InboxState {
++    const source = raw && typeof raw === "object" ? (raw as Partial<InboxState>) : {};
++    const highlights = Array.isArray(source.highlights) ? source.highlights.map((item) => this.normalizeHighlight(item)).filter(Boolean) as Highlight[] : [];
++    return {
++      highlights,
++      cards_pending: Array.isArray(source.cards_pending) ? source.cards_pending : [],
++      last_readwise_cursor: typeof source.last_readwise_cursor === "string" ? source.last_readwise_cursor : null,
++      updatedAt: asString(source.updatedAt, nowIso()),
++      schemaVersion: CURRENT_SCHEMA_VERSION
++    };
++  }
++
++  private normalizeHighlight(raw: unknown): Highlight | null {
++    if (!raw || typeof raw !== "object") {
++      return null;
++    }
++    const item = raw as Partial<Highlight>;
++    const readwiseId = asString(item.readwise_id || item.id);
++    if (!readwiseId) {
++      return null;
++    }
++    const loadedAt = asString(item.loadedAt, nowIso());
++    return {
++      id: asString(item.id, readwiseId),
++      readwise_id: readwiseId,
++      text: asString(item.text),
++      note: asString(item.note),
++      source_title: asString(item.source_title, "Untitled"),
++      source_author: asString(item.source_author, "Unknown author"),
++      source_url: asString(item.source_url),
++      source_cover: asString(item.source_cover),
++      highlighted_at: asString(item.highlighted_at),
++      category: asString(item.category, "highlight"),
++      readwise_url: asString(item.readwise_url),
++      status: normalizeStatus(item.status),
++      loadedAt,
++      updatedAt: asString(item.updatedAt, loadedAt)
++    };
++  }
++
++  private async ensureParentFolder(path: string): Promise<void> {
++    const parts = path.split("/");
++    parts.pop();
++    const folder = parts.join("/");
++    if (!folder) {
++      return;
++    }
++    if (!this.app.vault.getAbstractFileByPath(folder)) {
++      await this.app.vault.createFolder(folder);
++    }
++  }
++}
+diff --git a/src/InboxView.ts b/src/InboxView.ts
+new file mode 100644
+index 0000000..87fa280
+--- /dev/null
++++ b/src/InboxView.ts
+@@ -0,0 +1,173 @@
++import { ItemView, Modal, Notice, Setting, WorkspaceLeaf } from "obsidian";
++import { AnkiConnect, buildMedienFeld, buildZitatFeld } from "./AnkiConnect";
++import { InboxStateStore } from "./InboxState";
++import { ReadwiseApi } from "./ReadwiseApi";
++import { Highlight, PluginSettings } from "./types";
++import { ZettelCreator } from "./ZettelCreator";
++
++export const VIEW_TYPE_READWISE_INBOX = "readwise-inbox-view";
++
++export interface InboxViewDeps {
++  stateStore: InboxStateStore;
++  readwiseApi: ReadwiseApi;
++  anki: AnkiConnect;
++  zettelCreator: ZettelCreator;
++  getSettings: () => PluginSettings;
++}
++
++class MasteryModal extends Modal {
++  private frage = "";
++  private antwort = "";
++  private notizen: string;
++
++  constructor(app: import("obsidian").App, private highlight: Highlight, private onSubmit: (frage: string, antwort: string, notizen: string) => Promise<void>) {
++    super(app);
++    this.notizen = highlight.note;
++  }
++
++  onOpen(): void {
++    const { contentEl } = this;
++    contentEl.empty();
++    contentEl.addClass("rwi-modal");
++    contentEl.createEl("h2", { text: "Mastery Card" });
++
++    new Setting(contentEl)
++      .setName("Frage")
++      .addTextArea((text) => text.setPlaceholder("Frage").setValue(this.frage).onChange((value) => { this.frage = value; }));
++
++    new Setting(contentEl)
++      .setName("Antwort")
++      .addTextArea((text) => text.setPlaceholder("Antwort").setValue(this.antwort).onChange((value) => { this.antwort = value; }));
++
++    const quote = contentEl.createDiv({ cls: "rwi-readonly" });
++    quote.createEl("strong", { text: "Zitat" });
++    quote.createDiv().innerHTML = buildZitatFeld(this.highlight);
++
++    new Setting(contentEl)
++      .setName("Notizen")
++      .addTextArea((text) => text.setValue(this.notizen).onChange((value) => { this.notizen = value; }));
++
++    const media = contentEl.createDiv({ cls: "rwi-readonly" });
++    media.createEl("strong", { text: "Medien" });
++    media.createDiv().innerHTML = buildMedienFeld(this.highlight) || "—";
++
++    new Setting(contentEl)
++      .addButton((button) => button.setButtonText("An Anki senden").setCta().onClick(async () => {
++        if (!this.frage.trim() || !this.antwort.trim()) {
++          new Notice("Frage und Antwort sind erforderlich.");
++          return;
++        }
++        await this.onSubmit(this.frage, this.antwort, this.notizen);
++        this.close();
++      }));
++  }
++}
++
++export class InboxView extends ItemView {
++  constructor(leaf: WorkspaceLeaf, private deps: InboxViewDeps) {
++    super(leaf);
++  }
++
++  getViewType(): string {
++    return VIEW_TYPE_READWISE_INBOX;
++  }
++
++  getDisplayText(): string {
++    return "Readwise Inbox";
++  }
++
++  getIcon(): string {
++    return "inbox";
++  }
++
++  async onOpen(): Promise<void> {
++    await this.deps.stateStore.load();
++    this.render();
++  }
++
++  render(): void {
++    const container = this.containerEl.children[1] as HTMLElement;
++    container.empty();
++    container.addClass("rwi-view");
++
++    const header = container.createDiv({ cls: "rwi-header" });
++    const titleWrap = header.createDiv();
++    titleWrap.createEl("h1", { text: "Readwise Inbox" });
++    titleWrap.createEl("p", { text: "Highlights in Anki-Karten, Atomic Notes oder Skip überführen." });
++
++    const fetchButton = header.createEl("button", { text: "Readwise manuell laden", cls: "rwi-button rwi-button-primary" });
++    fetchButton.addEventListener("click", () => this.fetchReadwise());
++
++    const highlights = this.deps.stateStore.getInboxHighlights();
++    const count = container.createDiv({ cls: "rwi-count" });
++    count.textContent = `${highlights.length} Highlight${highlights.length === 1 ? "" : "s"} in der Inbox`;
++
++    if (highlights.length === 0) {
++      const empty = container.createDiv({ cls: "rwi-empty" });
++      empty.createEl("h2", { text: "Inbox leer" });
++      empty.createEl("p", { text: "Lade Readwise manuell oder genieße die freie Fläche." });
++      return;
++    }
++
++    const list = container.createDiv({ cls: "rwi-list" });
++    for (const highlight of highlights) {
++      list.appendChild(this.renderHighlight(highlight));
++    }
++  }
++
++  private renderHighlight(highlight: Highlight): HTMLElement {
++    const card = createDiv({ cls: "rwi-card" });
++    const meta = card.createDiv({ cls: "rwi-meta" });
++    meta.createSpan({ text: highlight.source_author || "Unknown author" });
++    meta.createSpan({ text: highlight.source_title || "Untitled" });
++
++    card.createEl("blockquote", { text: highlight.text, cls: "rwi-quote" });
++    if (highlight.note) {
++      const note = card.createDiv({ cls: "rwi-note" });
++      note.createEl("strong", { text: "Note: " });
++      note.appendText(highlight.note);
++    }
++
++    const actions = card.createDiv({ cls: "rwi-actions" });
++    actions.createEl("button", { text: "Mastery Card", cls: "rwi-button rwi-button-primary" }).addEventListener("click", () => this.openMastery(highlight));
++    actions.createEl("button", { text: "Atomic Note", cls: "rwi-button" }).addEventListener("click", () => this.openAtomic(highlight));
++    actions.createEl("button", { text: "Skip", cls: "rwi-button rwi-button-muted" }).addEventListener("click", () => this.skip(highlight));
++    return card;
++  }
++
++  private async fetchReadwise(): Promise<void> {
++    try {
++      await this.deps.readwiseApi.fetchHighlights();
++      this.render();
++    } catch (error) {
++      new Notice(error instanceof Error ? error.message : "Readwise Fetch fehlgeschlagen.");
++    }
++  }
++
++  private async skip(highlight: Highlight): Promise<void> {
++    await this.deps.stateStore.setStatus(highlight.id, "skipped");
++    new Notice("Highlight geskippt.");
++    this.render();
++  }
++
++  private openMastery(highlight: Highlight): void {
++    new MasteryModal(this.app, highlight, async (frage, antwort, notizen) => {
++      try {
++        await this.deps.anki.addMasteryNote(this.deps.getSettings().masteryDeck, highlight, { frage, antwort, notizen });
++        await this.deps.stateStore.setStatus(highlight.id, "processed");
++        new Notice("Mastery Card an Anki gesendet.");
++        this.render();
++      } catch (error) {
++        new Notice(error instanceof Error ? `Anki Fehler: ${error.message}` : "Anki Fehler.");
++      }
++    }).open();
++  }
++
++  private openAtomic(highlight: Highlight): void {
++    this.deps.zettelCreator.openCreateModal(highlight, async () => {
++      await this.deps.stateStore.setStatus(highlight.id, "processed");
++      new Notice("Atomic Note erstellt.");
++      this.render();
++    });
++  }
++}
+diff --git a/src/ReadwiseApi.ts b/src/ReadwiseApi.ts
+new file mode 100644
+index 0000000..a400f4e
+--- /dev/null
++++ b/src/ReadwiseApi.ts
+@@ -0,0 +1,89 @@
++import { Notice, requestUrl } from "obsidian";
++import { InboxStateStore } from "./InboxState";
++import { Highlight, PluginSettings, ReadwiseFetchResult } from "./types";
++
++const READWISE_ENDPOINT = "https://readwise.io/api/v3/list/";
++
++function asString(value: unknown, fallback = ""): string {
++  return typeof value === "string" ? value : fallback;
++}
++
++function firstString(...values: unknown[]): string {
++  for (const value of values) {
++    if (typeof value === "string" && value.length > 0) {
++      return value;
++    }
++  }
++  return "";
++}
++
++export class ReadwiseApi {
++  constructor(private getSettings: () => PluginSettings, private stateStore: InboxStateStore) {}
++
++  async fetchHighlights(): Promise<ReadwiseFetchResult> {
++    const token = this.getSettings().readwiseToken.trim();
++    if (!token) {
++      throw new Error("Readwise API Token fehlt in den Plugin-Einstellungen.");
++    }
++
++    const state = this.stateStore.getState();
++    const url = new URL(READWISE_ENDPOINT);
++    url.searchParams.set("category", "highlight");
++    if (state.last_readwise_cursor) {
++      url.searchParams.set("pageCursor", state.last_readwise_cursor);
++    } else {
++      const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
++      url.searchParams.set("updatedAfter", since);
++    }
++
++    const response = await requestUrl({
++      url: url.toString(),
++      method: "GET",
++      headers: { Authorization: `Token ${token}` }
++    });
++
++    if (response.status < 200 || response.status >= 300) {
++      throw new Error(`Readwise Fetch fehlgeschlagen (${response.status}).`);
++    }
++
++    const data = response.json as Record<string, unknown>;
++    const results = Array.isArray(data.results) ? data.results : [];
++    const highlights = results.map((item) => this.mapReadwise(item)).filter(Boolean) as Highlight[];
++    const counts = this.stateStore.upsertHighlights(highlights);
++    const cursor = firstString(data.nextPageCursor, data.next_page_cursor, data.nextCursor) || null;
++    this.stateStore.setCursor(cursor);
++    await this.stateStore.save();
++
++    new Notice(`Readwise geladen: ${counts.added} neu, ${counts.updated} aktualisiert.`);
++    return { ...counts, cursor };
++  }
++
++  mapReadwise(raw: unknown): Highlight | null {
++    if (!raw || typeof raw !== "object") {
++      return null;
++    }
++    const item = raw as Record<string, unknown>;
++    const id = firstString(item.id, item.highlight_id, item.readwise_id);
++    if (!id) {
++      return null;
++    }
++    const book = typeof item.book === "object" && item.book !== null ? item.book as Record<string, unknown> : {};
++    const now = new Date().toISOString();
++    return {
++      id,
++      readwise_id: id,
++      text: firstString(item.text, item.highlight, item.content),
++      note: firstString(item.note, item.notes),
++      source_title: firstString(item.source_title, item.title, book.title, "Untitled"),
++      source_author: firstString(item.source_author, item.author, book.author, "Unknown author"),
++      source_url: firstString(item.source_url, item.url, book.source_url),
++      source_cover: firstString(item.source_cover, item.cover_image_url, book.cover_image_url),
++      highlighted_at: firstString(item.highlighted_at, item.created_at, item.updated_at),
++      category: asString(item.category, "highlight"),
++      readwise_url: firstString(item.readwise_url, item.url),
++      status: "inbox",
++      loadedAt: now,
++      updatedAt: now
++    };
++  }
++}
+diff --git a/src/ZettelCreator.ts b/src/ZettelCreator.ts
+new file mode 100644
+index 0000000..ff90c0b
+--- /dev/null
++++ b/src/ZettelCreator.ts
+@@ -0,0 +1,164 @@
++import { App, FuzzySuggestModal, Modal, Notice, normalizePath, Setting, TFile } from "obsidian";
++import { Highlight, PluginSettings } from "./types";
++
++export interface ParentCandidate {
++  title: string;
++  path: string;
++  basename: string;
++}
++
++export interface AtomicNoteInput {
++  parent: ParentCandidate;
++  kuerzel: string;
++  title: string;
++  desc: string;
++  note: string;
++}
++
++function today(): string {
++  return new Date().toISOString().slice(0, 10);
++}
++
++function cleanSegment(value: string): string {
++  return value.trim().replace(/[\\/:*?"<>|]/g, "-");
++}
++
++function yamlString(value: string): string {
++  return JSON.stringify(value);
++}
++
++export class ParentSuggestModal extends FuzzySuggestModal<ParentCandidate> {
++  constructor(app: App, private onChoose: (candidate: ParentCandidate) => void) {
++    super(app);
++    this.setPlaceholder("Parent-Note nach title-Frontmatter oder Dateiname suchen...");
++  }
++
++  getItems(): ParentCandidate[] {
++    return this.app.vault.getMarkdownFiles().map((file) => {
++      const cache = this.app.metadataCache.getFileCache(file);
++      const title = typeof cache?.frontmatter?.title === "string" ? cache.frontmatter.title : file.basename;
++      return { title, path: file.path, basename: file.basename };
++    });
++  }
++
++  getItemText(item: ParentCandidate): string {
++    return `${item.title} — ${item.path}`;
++  }
++
++  onChooseItem(item: ParentCandidate): void {
++    this.onChoose(item);
++  }
++}
++
++export class AtomicNoteModal extends Modal {
++  private parent: ParentCandidate | null = null;
++  private kuerzel = "";
++  private title = "";
++  private desc = "";
++  private note = "";
++
++  constructor(app: App, private highlight: Highlight, private onSubmit: (input: AtomicNoteInput) => Promise<void>) {
++    super(app);
++    this.title = highlight.text.slice(0, 80).replace(/\s+/g, " ").trim();
++    this.desc = highlight.source_title;
++    this.note = highlight.note;
++  }
++
++  onOpen(): void {
++    this.render();
++  }
++
++  private render(): void {
++    const { contentEl } = this;
++    contentEl.empty();
++    contentEl.addClass("rwi-modal");
++    contentEl.createEl("h2", { text: "Atomic Note erstellen" });
++
++    new Setting(contentEl)
++      .setName("Parent")
++      .setDesc(this.parent ? `${this.parent.title} (${this.parent.path})` : "Parent per Fuzzy Search auswählen")
++      .addButton((button) => button.setButtonText("Parent suchen").onClick(() => {
++        new ParentSuggestModal(this.app, (candidate) => {
++          this.parent = candidate;
++          this.render();
++        }).open();
++      }));
++
++    new Setting(contentEl)
++      .setName("Kürzel")
++      .setDesc("Dateiname wird <parent-basename>.<k>.md")
++      .addText((text) => text.setPlaceholder("k").setValue(this.kuerzel).onChange((value) => { this.kuerzel = value; }));
++
++    new Setting(contentEl)
++      .setName("Titel")
++      .addTextArea((text) => text.setValue(this.title).onChange((value) => { this.title = value; }));
++
++    new Setting(contentEl)
++      .setName("Beschreibung")
++      .addText((text) => text.setValue(this.desc).onChange((value) => { this.desc = value; }));
++
++    new Setting(contentEl)
++      .setName("Notiz")
++      .addTextArea((text) => text.setValue(this.note).onChange((value) => { this.note = value; }));
++
++    contentEl.createEl("blockquote", { text: this.highlight.text });
++
++    new Setting(contentEl)
++      .addButton((button) => button.setButtonText("Erstellen").setCta().onClick(async () => {
++        if (!this.parent) {
++          new Notice("Bitte zuerst eine Parent-Note auswählen.");
++          return;
++        }
++        if (!this.kuerzel.trim()) {
++          new Notice("Bitte ein Kürzel eingeben.");
++          return;
++        }
++        await this.onSubmit({ parent: this.parent, kuerzel: this.kuerzel, title: this.title, desc: this.desc, note: this.note });
++        this.close();
++      }));
++  }
++}
++
++export class ZettelCreator {
++  constructor(private app: App, private getSettings: () => PluginSettings) {}
++
++  openCreateModal(highlight: Highlight, onCreated: (file: TFile) => Promise<void>): void {
++    new AtomicNoteModal(this.app, highlight, async (input) => {
++      const file = await this.createAtomicNote(highlight, input);
++      await onCreated(file);
++    }).open();
++  }
++
++  async createAtomicNote(highlight: Highlight, input: AtomicNoteInput): Promise<TFile> {
++    const folder = normalizePath(this.getSettings().zettelFolder || "");
++    if (folder) {
++      await this.ensureFolder(folder);
++    }
++
++    const filename = `${input.parent.basename}.${cleanSegment(input.kuerzel)}.md`;
++    const path = normalizePath(folder ? `${folder}/${filename}` : filename);
++    if (this.app.vault.getAbstractFileByPath(path)) {
++      throw new Error(`Datei existiert bereits: ${path}`);
++    }
++
++    const markdown = this.buildMarkdown(highlight, input);
++    const file = await this.app.vault.create(path, markdown);
++    await this.app.workspace.getLeaf("tab").openFile(file);
++    return file;
++  }
++
++  buildMarkdown(highlight: Highlight, input: AtomicNoteInput): string {
++    return `---\ntitle: ${yamlString(input.title)}\nalias: ${yamlString(input.title)}\ndesc: ${yamlString(input.desc)}\ntags:\n  - proto-atomic\ncreated: ${today()}\nrwi_source: readwise\n---\n\n# ${input.title}\n\n${input.note}\n\n## 📖 Quelle\n\n„${highlight.text}"\n(${highlight.source_author}, ${highlight.source_title})\n[📖 Original in Readwise](${highlight.readwise_url})\n`;
++  }
++
++  private async ensureFolder(folder: string): Promise<void> {
++    const parts = folder.split("/").filter(Boolean);
++    let current = "";
++    for (const part of parts) {
++      current = current ? `${current}/${part}` : part;
++      if (!this.app.vault.getAbstractFileByPath(current)) {
++        await this.app.vault.createFolder(current);
++      }
++    }
++  }
++}
+diff --git a/src/main.ts b/src/main.ts
+new file mode 100644
+index 0000000..b349261
+--- /dev/null
++++ b/src/main.ts
+@@ -0,0 +1,149 @@
++import { Notice, Plugin, PluginSettingTab, Setting, WorkspaceLeaf } from "obsidian";
++import { AnkiConnect } from "./AnkiConnect";
++import { InboxStateStore } from "./InboxState";
++import { InboxView, VIEW_TYPE_READWISE_INBOX } from "./InboxView";
++import { ReadwiseApi } from "./ReadwiseApi";
++import { PluginSettings } from "./types";
++import { ZettelCreator } from "./ZettelCreator";
++
++const DEFAULT_SETTINGS: PluginSettings = {
++  readwiseToken: "",
++  masteryDeck: "Mastery",
++  memriseDeck: "Memrise",
++  statePath: "readwise-inbox.json",
++  zettelFolder: ""
++};
++
++export default class ReadwiseInboxPlugin extends Plugin {
++  settings: PluginSettings = DEFAULT_SETTINGS;
++  stateStore!: InboxStateStore;
++  readwiseApi!: ReadwiseApi;
++  anki!: AnkiConnect;
++  zettelCreator!: ZettelCreator;
++
++  async onload(): Promise<void> {
++    await this.loadSettings();
++
++    this.stateStore = new InboxStateStore(this.app, () => this.settings);
++    await this.stateStore.load();
++    this.readwiseApi = new ReadwiseApi(() => this.settings, this.stateStore);
++    this.anki = new AnkiConnect();
++    this.zettelCreator = new ZettelCreator(this.app, () => this.settings);
++
++    this.registerView(VIEW_TYPE_READWISE_INBOX, (leaf) => new InboxView(leaf, {
++      stateStore: this.stateStore,
++      readwiseApi: this.readwiseApi,
++      anki: this.anki,
++      zettelCreator: this.zettelCreator,
++      getSettings: () => this.settings
++    }));
++
++    this.addRibbonIcon("inbox", "Readwise Inbox öffnen", () => this.activateView());
++    this.addCommand({
++      id: "open-readwise-inbox",
++      name: "Readwise Inbox öffnen",
++      callback: () => this.activateView()
++    });
++    this.addCommand({
++      id: "test-ankiconnect",
++      name: "AnkiConnect Verbindung testen",
++      callback: () => this.testAnki()
++    });
++
++    this.addSettingTab(new ReadwiseInboxSettingTab(this.app, this));
++  }
++
++  onunload(): void {
++    this.app.workspace.detachLeavesOfType(VIEW_TYPE_READWISE_INBOX);
++  }
++
++  async activateView(): Promise<void> {
++    const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_READWISE_INBOX);
++    let leaf: WorkspaceLeaf;
++    if (leaves.length > 0) {
++      leaf = leaves[0];
++    } else {
++      leaf = this.app.workspace.getRightLeaf(false) ?? this.app.workspace.getLeaf(true);
++      await leaf.setViewState({ type: VIEW_TYPE_READWISE_INBOX, active: true });
++    }
++    this.app.workspace.revealLeaf(leaf);
++  }
++
++  async loadSettings(): Promise<void> {
++    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
++  }
++
++  async saveSettings(): Promise<void> {
++    await this.saveData(this.settings);
++  }
++
++  async testAnki(): Promise<void> {
++    try {
++      const version = await this.anki.testConnection();
++      new Notice(`AnkiConnect verbunden (Version ${version}).`);
++    } catch (error) {
++      new Notice(error instanceof Error ? `AnkiConnect nicht erreichbar: ${error.message}` : "AnkiConnect nicht erreichbar.");
++    }
++  }
++}
++
++class ReadwiseInboxSettingTab extends PluginSettingTab {
++  constructor(app: import("obsidian").App, public plugin: ReadwiseInboxPlugin) {
++    super(app, plugin);
++  }
++
++  display(): void {
++    const { containerEl } = this;
++    containerEl.empty();
++    containerEl.addClass("rwi-settings");
++    containerEl.createEl("h2", { text: "Readwise Inbox Einstellungen" });
++
++    new Setting(containerEl)
++      .setName("Readwise API Token")
++      .setDesc("Token wird lokal in den Obsidian Plugin-Daten gespeichert und nicht ins Repository geschrieben.")
++      .addText((text) => {
++        text.inputEl.type = "password";
++        text.setPlaceholder("Readwise Token").setValue(this.plugin.settings.readwiseToken).onChange(async (value) => {
++          this.plugin.settings.readwiseToken = value.trim();
++          await this.plugin.saveSettings();
++        });
++      });
++
++    new Setting(containerEl)
++      .setName("Mastery Deck")
++      .addText((text) => text.setValue(this.plugin.settings.masteryDeck).onChange(async (value) => {
++        this.plugin.settings.masteryDeck = value;
++        await this.plugin.saveSettings();
++      }));
++
++    new Setting(containerEl)
++      .setName("Memrise Deck")
++      .setDesc("Sprint 1 legt nur die Settings und Modellkonstanten an; kein vollständiger Memrise-Flow.")
++      .addText((text) => text.setValue(this.plugin.settings.memriseDeck).onChange(async (value) => {
++        this.plugin.settings.memriseDeck = value;
++        await this.plugin.saveSettings();
++      }));
++
++    new Setting(containerEl)
++      .setName("State-Dateipfad")
++      .setDesc("Default: readwise-inbox.json")
++      .addText((text) => text.setValue(this.plugin.settings.statePath).onChange(async (value) => {
++        this.plugin.settings.statePath = value.trim() || "readwise-inbox.json";
++        await this.plugin.saveSettings();
++        await this.plugin.stateStore.load();
++      }));
++
++    new Setting(containerEl)
++      .setName("Zettel-Zielordner")
++      .setDesc("Leer lassen für Vault-Root.")
++      .addText((text) => text.setPlaceholder("z.B. Zettel").setValue(this.plugin.settings.zettelFolder).onChange(async (value) => {
++        this.plugin.settings.zettelFolder = value.trim();
++        await this.plugin.saveSettings();
++      }));
++
++    new Setting(containerEl)
++      .setName("AnkiConnect")
++      .setDesc("Testet http://localhost:8765")
++      .addButton((button) => button.setButtonText("Verbindung testen").onClick(() => this.plugin.testAnki()));
++  }
++}
+diff --git a/src/obsidian.d.ts b/src/obsidian.d.ts
+new file mode 100644
+index 0000000..1ff2e7e
+--- /dev/null
++++ b/src/obsidian.d.ts
+@@ -0,0 +1,117 @@
++declare module "obsidian" {
++  export class App {
++    vault: Vault;
++    workspace: Workspace;
++    metadataCache: MetadataCache;
++  }
++  export class Plugin {
++    app: App;
++    onload(): void | Promise<void>;
++    onunload(): void;
++    loadData(): Promise<unknown>;
++    saveData(data: unknown): Promise<void>;
++    registerView(type: string, viewCreator: (leaf: WorkspaceLeaf) => ItemView): void;
++    addRibbonIcon(icon: string, title: string, callback: (evt: MouseEvent) => unknown): HTMLElement;
++    addCommand(command: { id: string; name: string; callback: () => unknown }): void;
++    addSettingTab(tab: PluginSettingTab): void;
++  }
++  export class PluginSettingTab {
++    app: App;
++    plugin: Plugin;
++    containerEl: HTMLElement;
++    constructor(app: App, plugin: Plugin);
++    display(): void;
++  }
++  export class ItemView {
++    app: App;
++    leaf: WorkspaceLeaf;
++    containerEl: HTMLElement;
++    constructor(leaf: WorkspaceLeaf);
++    getViewType(): string;
++    getDisplayText(): string;
++    getIcon?(): string;
++    onOpen?(): void | Promise<void>;
++  }
++  export class Modal {
++    app: App;
++    contentEl: HTMLElement;
++    constructor(app: App);
++    open(): void;
++    close(): void;
++    onOpen?(): void;
++  }
++  export class FuzzySuggestModal<T> extends Modal {
++    setPlaceholder(placeholder: string): void;
++    getItems(): T[];
++    getItemText(item: T): string;
++    onChooseItem(item: T, evt: MouseEvent | KeyboardEvent): void;
++  }
++  export class Notice {
++    constructor(message: string, timeout?: number);
++  }
++  export class Setting {
++    settingEl: HTMLElement;
++    constructor(containerEl: HTMLElement);
++    setName(name: string): this;
++    setDesc(desc: string): this;
++    addText(cb: (component: TextComponent) => unknown): this;
++    addTextArea(cb: (component: TextAreaComponent) => unknown): this;
++    addButton(cb: (component: ButtonComponent) => unknown): this;
++  }
++  export class TextComponent {
++    inputEl: HTMLInputElement;
++    setPlaceholder(placeholder: string): this;
++    setValue(value: string): this;
++    onChange(callback: (value: string) => unknown): this;
++  }
++  export class TextAreaComponent {
++    inputEl: HTMLTextAreaElement;
++    setPlaceholder(placeholder: string): this;
++    setValue(value: string): this;
++    onChange(callback: (value: string) => unknown): this;
++  }
++  export class ButtonComponent {
++    setButtonText(text: string): this;
++    setCta(): this;
++    onClick(callback: (evt: MouseEvent) => unknown): this;
++  }
++  export class TFile {
++    path: string;
++    basename: string;
++  }
++  export interface Vault {
++    getAbstractFileByPath(path: string): TFile | unknown | null;
++    getMarkdownFiles(): TFile[];
++    read(file: TFile): Promise<string>;
++    modify(file: TFile, data: string): Promise<void>;
++    create(path: string, data: string): Promise<TFile>;
++    createFolder(path: string): Promise<void>;
++  }
++  export interface Workspace {
++    getLeavesOfType(type: string): WorkspaceLeaf[];
++    detachLeavesOfType(type: string): void;
++    getRightLeaf(split: boolean): WorkspaceLeaf | null;
++    getLeaf(newLeaf?: boolean | "tab"): WorkspaceLeaf;
++    revealLeaf(leaf: WorkspaceLeaf): void;
++  }
++  export interface WorkspaceLeaf {
++    setViewState(state: { type: string; active?: boolean }): Promise<void>;
++    openFile(file: TFile): Promise<void>;
++  }
++  export interface MetadataCache {
++    getFileCache(file: TFile): { frontmatter?: Record<string, unknown> } | null;
++  }
++  export function normalizePath(path: string): string;
++  export function requestUrl(options: { url: string; method?: string; headers?: Record<string, string>; body?: string }): Promise<{ status: number; json: unknown; text: string }>;
++}
++
++interface HTMLElement {
++  empty(): void;
++  addClass(cls: string): void;
++  createEl<K extends keyof HTMLElementTagNameMap>(tag: K, options?: { text?: string; cls?: string }): HTMLElementTagNameMap[K];
++  createDiv(options?: { cls?: string; text?: string }): HTMLDivElement;
++  createSpan(options?: { cls?: string; text?: string }): HTMLSpanElement;
++  appendText(text: string): void;
++}
++
++declare function createDiv(options?: { cls?: string; text?: string }): HTMLDivElement;
+diff --git a/src/types.ts b/src/types.ts
+new file mode 100644
+index 0000000..811d63c
+--- /dev/null
++++ b/src/types.ts
+@@ -0,0 +1,48 @@
++export type HighlightStatus = "inbox" | "processed" | "skipped";
++
++export interface Highlight {
++  id: string;
++  readwise_id: string;
++  text: string;
++  note: string;
++  source_title: string;
++  source_author: string;
++  source_url: string;
++  source_cover: string;
++  highlighted_at: string;
++  category: string;
++  readwise_url: string;
++  status: HighlightStatus;
++  loadedAt: string;
++  updatedAt: string;
++}
++
++export interface CardPending {
++  id: string;
++  highlightId: string;
++  type: "mastery" | "memrise";
++  createdAt: string;
++  payload: Record<string, unknown>;
++}
++
++export interface InboxState {
++  highlights: Highlight[];
++  cards_pending: CardPending[];
++  last_readwise_cursor: string | null;
++  updatedAt: string;
++  schemaVersion: number;
++}
++
++export interface PluginSettings {
++  readwiseToken: string;
++  masteryDeck: string;
++  memriseDeck: string;
++  statePath: string;
++  zettelFolder: string;
++}
++
++export interface ReadwiseFetchResult {
++  added: number;
++  updated: number;
++  cursor: string | null;
++}
+diff --git a/styles.css b/styles.css
+new file mode 100644
+index 0000000..4ca010b
+--- /dev/null
++++ b/styles.css
+@@ -0,0 +1,145 @@
++.rwi-view {
++  --rwi-bg: #f5f0e8;
++  --rwi-surface: #faf7f2;
++  --rwi-surface-2: #f0ead8;
++  --rwi-border: #c8bfa8;
++  --rwi-ink: #2c2416;
++  --rwi-muted: #6b5d4a;
++  --rwi-gold: #b8860b;
++  --rwi-rust: #8b3a2a;
++  background: var(--rwi-bg);
++  color: var(--rwi-ink);
++  min-height: 100%;
++  padding: 22px;
++}
++
++.rwi-header {
++  align-items: center;
++  border-bottom: 1px solid var(--rwi-border);
++  display: flex;
++  gap: 16px;
++  justify-content: space-between;
++  margin: 0 auto 18px;
++  max-width: 860px;
++  padding-bottom: 16px;
++}
++
++.rwi-header h1 {
++  font-family: Georgia, serif;
++  margin: 0;
++}
++
++.rwi-header p,
++.rwi-count,
++.rwi-meta,
++.rwi-note {
++  color: var(--rwi-muted);
++}
++
++.rwi-count,
++.rwi-list,
++.rwi-empty {
++  margin-left: auto;
++  margin-right: auto;
++  max-width: 860px;
++}
++
++.rwi-list {
++  display: grid;
++  gap: 16px;
++  margin-top: 16px;
++}
++
++.rwi-card,
++.rwi-empty,
++.rwi-readonly {
++  background: var(--rwi-surface);
++  border: 1px solid var(--rwi-border);
++  border-radius: 18px;
++  box-shadow: 0 10px 28px rgba(44, 36, 22, 0.08);
++  padding: 18px;
++}
++
++.rwi-meta {
++  display: flex;
++  flex-wrap: wrap;
++  font-family: var(--font-interface);
++  font-size: 0.85rem;
++  gap: 8px 14px;
++  letter-spacing: 0.02em;
++  text-transform: uppercase;
++}
++
++.rwi-quote {
++  border-left: 4px solid var(--rwi-gold);
++  font-family: Georgia, serif;
++  font-size: 1.05rem;
++  margin: 14px 0;
++  padding-left: 14px;
++}
++
++.rwi-note {
++  background: var(--rwi-surface-2);
++  border-radius: 12px;
++  margin-top: 12px;
++  padding: 12px;
++}
++
++.rwi-actions {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 10px;
++  margin-top: 16px;
++}
++
++.rwi-button {
++  align-items: center;
++  background: var(--rwi-surface-2);
++  border: 1px solid var(--rwi-border);
++  border-radius: 999px;
++  color: var(--rwi-ink);
++  cursor: pointer;
++  display: inline-flex;
++  font-weight: 700;
++  justify-content: center;
++  min-height: 42px;
++  padding: 10px 16px;
++}
++
++.rwi-button:hover {
++  filter: brightness(0.98);
++}
++
++.rwi-button-primary {
++  background: var(--rwi-gold);
++  border-color: var(--rwi-gold);
++  color: #fff8e8;
++}
++
++.rwi-button-muted {
++  color: var(--rwi-rust);
++}
++
++.rwi-empty {
++  margin-top: 24px;
++  text-align: center;
++}
++
++.rwi-modal textarea {
++  min-height: 90px;
++  width: 100%;
++}
++
++.rwi-modal blockquote,
++.rwi-readonly {
++  margin: 14px 0;
++}
++
++.rwi-readonly img {
++  max-height: 180px;
++  max-width: 100%;
++}
++
++.rwi-settings input {
++  min-width: 280px;
++}
+diff --git a/tsconfig.json b/tsconfig.json
+new file mode 100644
+index 0000000..bcce9e3
+--- /dev/null
++++ b/tsconfig.json
+@@ -0,0 +1,28 @@
++{
++  "compilerOptions": {
++    "baseUrl": ".",
++    "module": "CommonJS",
++    "target": "ES2018",
++    "allowJs": false,
++    "noImplicitAny": true,
++    "moduleResolution": "node",
++    "importHelpers": true,
++    "isolatedModules": true,
++    "strictNullChecks": true,
++    "lib": [
++      "DOM",
++      "ES2018"
++    ],
++    "ignoreDeprecations": "6.0",
++    "rootDir": "src",
++    "outDir": ".",
++    "noEmitOnError": true
++  },
++  "include": [
++    "src/**/*.ts"
++  ],
++  "exclude": [
++    "node_modules",
++    "reference"
++  ]
++}
+diff --git a/types.js b/types.js
+new file mode 100644
+index 0000000..c8ad2e5
+--- /dev/null
++++ b/types.js
+@@ -0,0 +1,2 @@
++"use strict";
++Object.defineProperty(exports, "__esModule", { value: true });
