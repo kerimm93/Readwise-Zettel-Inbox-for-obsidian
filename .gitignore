@@ -1,0 +1,8 @@
+node_modules/
+review_artifacts/
+AnkiConnect.js
+InboxState.js
+InboxView.js
+ReadwiseApi.js
+ZettelCreator.js
+types.js
