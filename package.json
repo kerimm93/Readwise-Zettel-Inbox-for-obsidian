@@ -4,8 +4,9 @@
   "description": "Readwise Inbox Obsidian plugin bootstrap.",
   "main": "main.js",
   "scripts": {
-    "build": "tsc --project tsconfig.json",
-    "dev": "node esbuild.config.mjs --watch"
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "test:readwise-fixture": "node --experimental-strip-types tests/readwise-export-fixture.test.ts"
   },
   "keywords": [
     "obsidian",

@@ -37,12 +37,18 @@ function escapeHtml(value: string): string {
 }
 
 export function buildMedienFeld(highlight: Highlight): string {
-  const parts: string[] = [];
-  if (highlight.source_cover) {
-    parts.push(`<img src="${escapeHtml(highlight.source_cover)}" alt="Cover">`);
-  }
+  const rows = [
+    ["Autor", highlight.source_author],
+    ["Titel", highlight.source_title],
+    ["Category", highlight.category]
+  ].filter(([, value]) => value);
+
+  const parts = rows.map(([label, value]) => `<strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}`);
   if (highlight.source_url) {
     parts.push(`<a href="${escapeHtml(highlight.source_url)}">Quelle</a>`);
+  }
+  if (highlight.source_cover) {
+    parts.push(`<img src="${escapeHtml(highlight.source_cover)}" alt="Cover">`);
   }
   return parts.join("<br>");
 }

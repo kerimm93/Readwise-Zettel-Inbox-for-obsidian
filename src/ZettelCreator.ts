@@ -113,8 +113,12 @@ export class AtomicNoteModal extends Modal {
           new Notice("Bitte ein Kürzel eingeben.");
           return;
         }
-        await this.onSubmit({ parent: this.parent, kuerzel: this.kuerzel, title: this.title, desc: this.desc, note: this.note });
-        this.close();
+        try {
+          await this.onSubmit({ parent: this.parent, kuerzel: this.kuerzel, title: this.title, desc: this.desc, note: this.note });
+          this.close();
+        } catch (error) {
+          new Notice(error instanceof Error ? error.message : "Atomic Note konnte nicht erstellt werden.");
+        }
       }));
   }
 }
