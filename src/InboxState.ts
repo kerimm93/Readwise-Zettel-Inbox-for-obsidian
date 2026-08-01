@@ -1,4 +1,5 @@
 import { App, normalizePath, TFile } from "obsidian";
+import { mergeFetchedHighlight } from "./HighlightMerge";
 import { Highlight, HighlightStatus, InboxState, PluginSettings } from "./types";
 
 const CURRENT_SCHEMA_VERSION = 1;
@@ -80,23 +81,7 @@ export class InboxStateStore {
         continue;
       }
 
-      const status = existing.status === "processed" || existing.status === "skipped" ? existing.status : "inbox";
-      Object.assign(existing, {
-        ...existing,
-        readwise_id: existing.readwise_id || next.readwise_id,
-        text: existing.text || next.text,
-        note: existing.note || next.note,
-        source_title: existing.source_title || next.source_title,
-        source_author: existing.source_author || next.source_author,
-        source_url: existing.source_url || next.source_url,
-        source_cover: existing.source_cover || next.source_cover,
-        highlighted_at: existing.highlighted_at || next.highlighted_at,
-        category: existing.category || next.category,
-        readwise_url: existing.readwise_url || next.readwise_url,
-        loadedAt: existing.loadedAt || next.loadedAt,
-        updatedAt: nowIso(),
-        status
-      });
+      Object.assign(existing, mergeFetchedHighlight(existing, next));
       updated += 1;
     }
 

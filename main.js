@@ -96,6 +96,28 @@ var AnkiConnect = class {
 
 // src/InboxState.ts
 var import_obsidian = require("obsidian");
+
+// src/HighlightMerge.ts
+function mergeFetchedHighlight(existing, next) {
+  return {
+    ...existing,
+    readwise_id: next.readwise_id,
+    text: next.text,
+    note: next.note,
+    source_title: next.source_title,
+    source_author: next.source_author,
+    source_url: next.source_url,
+    source_cover: next.source_cover,
+    highlighted_at: next.highlighted_at,
+    category: next.category,
+    readwise_url: next.readwise_url,
+    updatedAt: next.updatedAt,
+    status: existing.status,
+    loadedAt: existing.loadedAt
+  };
+}
+
+// src/InboxState.ts
 var CURRENT_SCHEMA_VERSION = 1;
 var DEFAULT_STATE = {
   highlights: [],
@@ -165,23 +187,7 @@ var InboxStateStore = class {
         added += 1;
         continue;
       }
-      const status = existing.status === "processed" || existing.status === "skipped" ? existing.status : "inbox";
-      Object.assign(existing, {
-        ...existing,
-        readwise_id: existing.readwise_id || next.readwise_id,
-        text: existing.text || next.text,
-        note: existing.note || next.note,
-        source_title: existing.source_title || next.source_title,
-        source_author: existing.source_author || next.source_author,
-        source_url: existing.source_url || next.source_url,
-        source_cover: existing.source_cover || next.source_cover,
-        highlighted_at: existing.highlighted_at || next.highlighted_at,
-        category: existing.category || next.category,
-        readwise_url: existing.readwise_url || next.readwise_url,
-        loadedAt: existing.loadedAt || next.loadedAt,
-        updatedAt: nowIso(),
-        status
-      });
+      Object.assign(existing, mergeFetchedHighlight(existing, next));
       updated += 1;
     }
     this.state.updatedAt = nowIso();
