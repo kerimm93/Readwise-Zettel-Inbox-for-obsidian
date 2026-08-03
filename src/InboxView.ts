@@ -1,9 +1,13 @@
-import { ItemView, Modal, Notice, Setting, WorkspaceLeaf } from "obsidian";
+import { ItemView, Modal, normalizePath, Notice, Setting, WorkspaceLeaf } from "obsidian";
 import { AnkiConnect, buildMedienFeld, buildZitatFeld } from "./AnkiConnect";
 import { InboxStateStore } from "./InboxState";
 import { ReadwiseApi } from "./ReadwiseApi";
 import { Highlight, PluginSettings } from "./types";
 import { ZettelCreator } from "./ZettelCreator";
+import { ReflectNoteService } from "./ReflectNoteService";
+import { hasRoute, isConfirmedReflectResolution, isMasteryAvailable, reconcileReflectStatus, recordConfirmedReflectFile, reflectActionState, reflectButtonLabels, shouldUpdateReflectFilePath } from "./WorkflowRouting";
+import { completeAtomicWorkflow } from "./WorkflowActions";
+import { buildReflectIndexIfNeeded } from "./ReflectResolution";
 
 export const VIEW_TYPE_READWISE_INBOX = "readwise-inbox-view";
 
@@ -12,6 +16,7 @@ export interface InboxViewDeps {
   readwiseApi: ReadwiseApi;
   anki: AnkiConnect;
   zettelCreator: ZettelCreator;
+  reflectNotes: ReflectNoteService;
   getSettings: () => PluginSettings;
 }
 
@@ -64,6 +69,8 @@ class MasteryModal extends Modal {
 }
 
 export class InboxView extends ItemView {
+  private confirmedReflectFiles = new Set<string>();
+
   constructor(leaf: WorkspaceLeaf, private deps: InboxViewDeps) {
     super(leaf);
   }
@@ -82,6 +89,28 @@ export class InboxView extends ItemView {
 
   async onOpen(): Promise<void> {
     await this.deps.stateStore.load();
+    this.confirmedReflectFiles.clear();
+    const reflectHighlights = this.deps.stateStore.getState().highlights.filter((item) => hasRoute(item, "reflect"));
+    const reflectIndex = await buildReflectIndexIfNeeded(reflectHighlights.map((highlight) => highlight.id), () => this.deps.reflectNotes.buildIndex());
+    for (const highlight of reflectHighlights) {
+      try {
+        const resolution = this.deps.reflectNotes.resolveFromIndex(reflectIndex!, highlight.id);
+        if (isConfirmedReflectResolution(resolution.kind)) recordConfirmedReflectFile(this.confirmedReflectFiles, highlight.id);
+        if (resolution.kind === "ambiguous") {
+          new Notice(`Mehrere Reflect-Dateien für Highlight ${highlight.id} gefunden.`);
+          continue;
+        }
+        if (resolution.kind === "unresolved") continue;
+        const file = resolution.kind === "found" ? resolution.file : null;
+        const reconciledStatus = reconcileReflectStatus(highlight.workflow.reflect, resolution.kind === "found", resolution.kind === "found" && resolution.reflected);
+        if (file) {
+          const currentPath = normalizePath(highlight.workflow.reflectFilePath || "");
+          const resolvedPath = normalizePath(file.path);
+          if (shouldUpdateReflectFilePath(currentPath, resolvedPath)) await this.deps.stateStore.setReflectFilePath(highlight.id, resolvedPath);
+        }
+        if (reconciledStatus !== highlight.workflow.reflect) await this.deps.stateStore.setWorkflowStatus(highlight.id, "reflect", reconciledStatus);
+      } catch (error) { new Notice(error instanceof Error ? error.message : "Reflect-Status konnte nicht abgeglichen werden."); }
+    }
     this.render();
   }
 
@@ -100,7 +129,7 @@ export class InboxView extends ItemView {
 
     const highlights = this.deps.stateStore.getInboxHighlights();
     const count = container.createDiv({ cls: "rwi-count" });
-    count.textContent = `${highlights.length} Highlight${highlights.length === 1 ? "" : "s"} in der Inbox`;
+    count.textContent = `${highlights.length} Highlight${highlights.length === 1 ? "" : "s"} im Workflow`;
 
     if (highlights.length === 0) {
       const empty = container.createDiv({ cls: "rwi-empty" });
@@ -120,6 +149,11 @@ export class InboxView extends ItemView {
     const meta = card.createDiv({ cls: "rwi-meta" });
     meta.createSpan({ text: highlight.source_author || "Unknown author" });
     meta.createSpan({ text: highlight.source_title || "Untitled" });
+    meta.createSpan({ text: highlight.tags.length ? `Tags: ${highlight.tags.join(", ")}` : "Keine Workflow-Tags" });
+
+    const workflow = card.createDiv({ cls: "rwi-workflows" });
+    if (hasRoute(highlight, "atomic")) workflow.createSpan({ text: `Atomic: ${highlight.workflow.atomic}` });
+    if (hasRoute(highlight, "reflect")) workflow.createSpan({ text: `Reflect: ${highlight.workflow.reflect}` });
 
     card.createEl("blockquote", { text: highlight.text, cls: "rwi-quote" });
     if (highlight.note) {
@@ -129,10 +163,51 @@ export class InboxView extends ItemView {
     }
 
     const actions = card.createDiv({ cls: "rwi-actions" });
-    actions.createEl("button", { text: "Mastery Card", cls: "rwi-button rwi-button-primary" }).addEventListener("click", () => this.openMastery(highlight));
-    actions.createEl("button", { text: "Atomic Note", cls: "rwi-button" }).addEventListener("click", () => this.openAtomic(highlight));
-    actions.createEl("button", { text: "Skip", cls: "rwi-button rwi-button-muted" }).addEventListener("click", () => this.skip(highlight));
+    if (isMasteryAvailable(highlight)) actions.createEl("button", { text: "Mastery Card", cls: "rwi-button rwi-button-primary" }).addEventListener("click", () => this.openMastery(highlight));
+    if (hasRoute(highlight, "atomic")) {
+      if (highlight.workflow.atomic === "open") {
+        actions.createEl("button", { text: "Atomic Note", cls: "rwi-button" }).addEventListener("click", () => this.openAtomic(highlight));
+        actions.createEl("button", { text: "Atomic skip", cls: "rwi-button rwi-button-muted" }).addEventListener("click", () => this.skipRoute(highlight, "atomic"));
+      }
+    }
+    if (hasRoute(highlight, "reflect")) {
+      const reflectActions = reflectActionState(highlight, this.confirmedReflectFiles.has(highlight.id));
+      for (const label of reflectButtonLabels(reflectActions)) {
+        const button = actions.createEl("button", { text: label, cls: label === "Reflect skip" ? "rwi-button rwi-button-muted" : "rwi-button" });
+        if (label === "Reflect öffnen") button.addEventListener("click", () => this.openReflect(highlight));
+        else if (label === "Reflect skip") button.addEventListener("click", () => this.skipRoute(highlight, "reflect"));
+        else button.addEventListener("click", () => this.toggleReflect(highlight));
+      }
+    }
+    if (isMasteryAvailable(highlight)) actions.createEl("button", { text: "Skip", cls: "rwi-button rwi-button-muted" }).addEventListener("click", () => this.skip(highlight));
     return card;
+  }
+
+  private async skipRoute(highlight: Highlight, route: "atomic" | "reflect"): Promise<void> {
+    await this.deps.stateStore.setWorkflowStatus(highlight.id, route, "skipped");
+    new Notice(`${route === "atomic" ? "Atomic" : "Reflect"} geskippt.`);
+    this.render();
+  }
+
+  private async openReflect(highlight: Highlight): Promise<void> {
+    try {
+      const { file, reflected } = await this.deps.reflectNotes.openOrCreate(highlight);
+      recordConfirmedReflectFile(this.confirmedReflectFiles, highlight.id);
+      await this.deps.stateStore.setReflectFilePath(highlight.id, file.path);
+      await this.deps.stateStore.setWorkflowStatus(highlight.id, "reflect", reflected ? "processed" : "open");
+      this.render();
+    } catch (error) { new Notice(error instanceof Error ? error.message : "Reflect-Datei konnte nicht geöffnet werden."); }
+  }
+
+  private async toggleReflect(highlight: Highlight): Promise<void> {
+    try {
+      const next = highlight.workflow.reflect !== "processed";
+      const file = await this.deps.reflectNotes.setReflected(highlight, next);
+      recordConfirmedReflectFile(this.confirmedReflectFiles, highlight.id);
+      await this.deps.stateStore.setReflectFilePath(highlight.id, file.path);
+      await this.deps.stateStore.setWorkflowStatus(highlight.id, "reflect", next ? "processed" : "open");
+      this.render();
+    } catch (error) { new Notice(error instanceof Error ? error.message : "Reflect-Status konnte nicht geändert werden."); }
   }
 
   private async fetchReadwise(): Promise<void> {
@@ -165,7 +240,7 @@ export class InboxView extends ItemView {
 
   private openAtomic(highlight: Highlight): void {
     this.deps.zettelCreator.openCreateModal(highlight, async () => {
-      await this.deps.stateStore.setStatus(highlight.id, "processed");
+      await completeAtomicWorkflow(this.deps.stateStore, highlight.id);
       new Notice("Atomic Note erstellt.");
       this.render();
     });

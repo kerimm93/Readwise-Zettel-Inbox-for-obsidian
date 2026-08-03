@@ -19,6 +19,7 @@ const fixture = {
           note: "Remember this",
           highlighted_at: "2026-05-31T12:00:00Z",
           image_url: "https://images.example/highlight.jpg"
+          ,tags: [{ id: 11, name: " Reflect " }, { id: 12, name: "MAKE-ATOMIC" }, { id: 13, name: "reflect" }]
         }
       ]
     }
@@ -42,6 +43,8 @@ assert.deepEqual(highlights[0], {
   highlighted_at: "2026-05-31T12:00:00Z",
   category: "books",
   readwise_url: "https://readwise.io/bookreview/123",
+  tags: ["reflect", "make-atomic"],
+  workflow: { atomic: "open", reflect: "open", reflectFilePath: "" },
   status: "inbox",
   loadedAt,
   updatedAt: loadedAt
