@@ -1,8 +1,9 @@
 import { App, normalizePath, TFile } from "obsidian";
 import { mergeFetchedHighlight } from "./HighlightMerge";
-import { Highlight, HighlightStatus, InboxState, PluginSettings } from "./types";
+import { Highlight, HighlightStatus, InboxState, PluginSettings, WorkflowStatus } from "./types";
+import { isWorkflowVisible, normalizeTags, normalizeWorkflow, WorkflowRoute } from "./WorkflowRouting";
 
-const CURRENT_SCHEMA_VERSION = 1;
+const CURRENT_SCHEMA_VERSION = 2;
 
 export const DEFAULT_STATE: InboxState = {
   highlights: [],
@@ -37,7 +38,7 @@ export class InboxStateStore {
   }
 
   getInboxHighlights(): Highlight[] {
-    return this.state.highlights.filter((highlight) => highlight.status === "inbox");
+    return this.state.highlights.filter((highlight) => isWorkflowVisible(highlight));
   }
 
   async load(): Promise<InboxState> {
@@ -114,6 +115,23 @@ export class InboxStateStore {
     return true;
   }
 
+  async setWorkflowStatus(id: string, route: WorkflowRoute, status: WorkflowStatus): Promise<boolean> {
+    const highlight = this.state.highlights.find((item) => item.id === id);
+    if (!highlight) return false;
+    highlight.workflow[route] = status;
+    highlight.updatedAt = nowIso();
+    await this.save();
+    return true;
+  }
+
+  async setReflectFilePath(id: string, path: string): Promise<boolean> {
+    const highlight = this.state.highlights.find((item) => item.id === id);
+    if (!highlight) return false;
+    highlight.workflow.reflectFilePath = normalizePath(path);
+    await this.save();
+    return true;
+  }
+
   private getStatePath(): string {
     return normalizePath(this.getSettings().statePath || "readwise-inbox.json");
   }
@@ -152,6 +170,9 @@ export class InboxStateStore {
       highlighted_at: asString(item.highlighted_at),
       category: asString(item.category, "highlight"),
       readwise_url: asString(item.readwise_url),
+      tags: normalizeTags(item.tags),
+      // The old global status cannot identify which workflow ran; no route is inferred.
+      workflow: normalizeWorkflow(item.workflow),
       status: normalizeStatus(item.status),
       loadedAt,
       updatedAt: asString(item.updatedAt, loadedAt)
@@ -165,8 +186,10 @@ export class InboxStateStore {
     if (!folder) {
       return;
     }
-    if (!this.app.vault.getAbstractFileByPath(folder)) {
-      await this.app.vault.createFolder(folder);
+    let current = "";
+    for (const part of folder.split("/").filter(Boolean)) {
+      current = current ? `${current}/${part}` : part;
+      if (!this.app.vault.getAbstractFileByPath(current)) await this.app.vault.createFolder(current);
     }
   }
 }

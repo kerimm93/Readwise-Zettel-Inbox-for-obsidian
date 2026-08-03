@@ -1,4 +1,11 @@
 export type HighlightStatus = "inbox" | "processed" | "skipped";
+export type WorkflowStatus = "open" | "processed" | "skipped";
+
+export interface WorkflowState {
+  atomic: WorkflowStatus;
+  reflect: WorkflowStatus;
+  reflectFilePath: string;
+}
 
 export interface Highlight {
   id: string;
@@ -12,6 +19,8 @@ export interface Highlight {
   highlighted_at: string;
   category: string;
   readwise_url: string;
+  tags: string[];
+  workflow: WorkflowState;
   status: HighlightStatus;
   loadedAt: string;
   updatedAt: string;
@@ -39,6 +48,7 @@ export interface PluginSettings {
   memriseDeck: string;
   statePath: string;
   zettelFolder: string;
+  reflectFolder: string;
 }
 
 export interface ReadwiseFetchResult {
