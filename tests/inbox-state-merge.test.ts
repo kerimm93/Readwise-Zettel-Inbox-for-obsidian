@@ -17,6 +17,8 @@ function highlight(status: HighlightStatus): Highlight {
     highlighted_at: "2026-05-01T00:00:00.000Z",
     category: "old-category",
     readwise_url: "https://readwise.io/old",
+    tags: ["make-atomic"],
+    workflow: { atomic: "processed", reflect: "open", reflectFilePath: "Reflect/existing.md" },
     status,
     loadedAt: originalLoadedAt,
     updatedAt: originalLoadedAt
@@ -36,6 +38,7 @@ const next: Highlight = {
   highlighted_at: "2026-06-30T00:00:00.000Z",
   category: "books",
   readwise_url: "https://readwise.io/new",
+  tags: ["reflect"],
   loadedAt: fetchedAt,
   updatedAt: fetchedAt
 };
@@ -54,6 +57,8 @@ assert.equal(mergedInbox.readwise_id, "highlight-123");
 assert.equal(mergedInbox.updatedAt, fetchedAt);
 assert.equal(mergedInbox.status, "inbox");
 assert.equal(mergedInbox.loadedAt, originalLoadedAt);
+assert.deepEqual(mergedInbox.tags, ["reflect"]);
+assert.deepEqual(mergedInbox.workflow, { atomic: "processed", reflect: "open", reflectFilePath: "Reflect/existing.md" });
 
 for (const status of ["skipped", "processed"] as const) {
   const merged = mergeFetchedHighlight(highlight(status), next);

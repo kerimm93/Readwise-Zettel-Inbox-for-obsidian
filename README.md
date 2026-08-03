@@ -8,7 +8,7 @@ Das Projekt ist aus einer Single-File-HTML-App entstanden. Diese App liegt weite
 
 ## Status
 
-**Aktueller Stand:** frühes Plugin-MVP nach Sprint 1
+**Aktueller Stand:** Plugin-MVP mit Tag-Routing und Reflect-Workflow
 
 Bereits vorhanden:
 
@@ -27,6 +27,8 @@ Bereits vorhanden:
 * direkte Markdown-Dateierstellung im Vault
 * Structured-Tree-Dateinamen über Parent-Fuzzy-Search
 * warme Papier-/Schreibtisch-Ästhetik
+* unabhängiges Routing über die Highlight-Tags `make-atomic` und `reflect`
+* idempotente Reflect-Dateien mit Frontmatter als Abschluss-Wahrheit
 
 Noch nicht produktionsreif / später geplant:
 
@@ -238,6 +240,7 @@ Aktuelle Einstellungen:
 | Memrise Deck       | vorbereitet, aber noch kein vollständiger Memrise-Flow         |
 | State-Dateipfad    | Pfad zur `readwise-inbox.json`, Default: `readwise-inbox.json` |
 | Zettel-Zielordner  | Zielordner für neu erzeugte Atomic Notes; leer = Vault-Root    |
+| Ordner für Reflexionsnotizen | Zielordner für Reflect-Dateien; Default: `Readwise Inbox/Reflect` |
 
 Tokens werden in den Obsidian-Plugin-Daten gespeichert, nicht in `readwise-inbox.json`.
 
@@ -279,10 +282,30 @@ interface Highlight {
   category: string;
   readwise_url: string;
   status: "inbox" | "processed" | "skipped";
+  tags: string[];
+  workflow: {
+    atomic: "open" | "processed" | "skipped";
+    reflect: "open" | "processed" | "skipped";
+    reflectFilePath: string;
+  };
   loadedAt: string;
   updatedAt: string;
 }
 ```
+
+Readwise liefert Tags im Export auf Highlight-Ebene als Objekte mit `name`.
+Das Plugin übernimmt keine Dokument-Tags, normalisiert Namen kleingeschrieben
+und führt beim manuellen Laden einen vollständig paginierten Export aus. Dies
+erkennt später gesetzte Tags zuverlässig, kann bei großen Bibliotheken jedoch
+mehr API-Aufrufe und längere Laufzeit verursachen. Der allgemeine Sprint-1-
+Status bleibt für Mastery kompatibel; Atomic und Reflect besitzen unabhängige
+Statuswerte. Bei alten State-Dateien starten beide konservativ als `open`, da
+der frühere globale `processed`-Wert den ausgeführten Pfad nicht beweist.
+
+Reflect-Dateien heißen `Reflect – <Highlight-ID> – <Titel>.md`. Vor Erstellung
+wird zuerst der gecachte Pfad und danach die Frontmatter-ID aller Markdown-
+Dateien geprüft. Vorhandene Dateien werden nur geöffnet und nie überschrieben.
+Bei mehreren Dateien mit derselben ID bricht das Plugin mit einem Hinweis ab.
 
 ---
 
