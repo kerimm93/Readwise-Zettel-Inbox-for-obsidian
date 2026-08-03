@@ -32,9 +32,12 @@
 .rwi-header p,
 .rwi-count,
 .rwi-meta,
-.rwi-note {
+.rwi-note,
+.rwi-workflows {
   color: var(--rwi-muted);
 }
+
+.rwi-workflows { display: flex; gap: 12px; margin-top: 8px; font-size: .85rem; }
 
 .rwi-count,
 .rwi-list,
