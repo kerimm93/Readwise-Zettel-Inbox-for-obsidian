@@ -5,13 +5,16 @@ import { InboxView, VIEW_TYPE_READWISE_INBOX } from "./InboxView";
 import { ReadwiseApi } from "./ReadwiseApi";
 import { PluginSettings } from "./types";
 import { ZettelCreator } from "./ZettelCreator";
+import { ReflectNoteService } from "./ReflectNoteService";
+import { normalizePath } from "obsidian";
 
 const DEFAULT_SETTINGS: PluginSettings = {
   readwiseToken: "",
   masteryDeck: "Mastery",
   memriseDeck: "Memrise",
   statePath: "readwise-inbox.json",
-  zettelFolder: ""
+  zettelFolder: "",
+  reflectFolder: "Readwise Inbox/Reflect"
 };
 
 export default class ReadwiseInboxPlugin extends Plugin {
@@ -20,6 +23,7 @@ export default class ReadwiseInboxPlugin extends Plugin {
   readwiseApi!: ReadwiseApi;
   anki!: AnkiConnect;
   zettelCreator!: ZettelCreator;
+  reflectNotes!: ReflectNoteService;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -29,12 +33,14 @@ export default class ReadwiseInboxPlugin extends Plugin {
     this.readwiseApi = new ReadwiseApi(() => this.settings, this.stateStore);
     this.anki = new AnkiConnect();
     this.zettelCreator = new ZettelCreator(this.app, () => this.settings);
+    this.reflectNotes = new ReflectNoteService(this.app, () => this.settings);
 
     this.registerView(VIEW_TYPE_READWISE_INBOX, (leaf) => new InboxView(leaf, {
       stateStore: this.stateStore,
       readwiseApi: this.readwiseApi,
       anki: this.anki,
       zettelCreator: this.zettelCreator,
+      reflectNotes: this.reflectNotes,
       getSettings: () => this.settings
     }));
 
@@ -138,6 +144,15 @@ class ReadwiseInboxSettingTab extends PluginSettingTab {
       .setDesc("Leer lassen für Vault-Root.")
       .addText((text) => text.setPlaceholder("z.B. Zettel").setValue(this.plugin.settings.zettelFolder).onChange(async (value) => {
         this.plugin.settings.zettelFolder = value.trim();
+        await this.plugin.saveSettings();
+      }));
+
+    new Setting(containerEl)
+      .setName("Ordner für Reflexionsnotizen")
+      .setDesc("Relativ zum Vault-Root. Default: Readwise Inbox/Reflect")
+      .addText((text) => text.setValue(this.plugin.settings.reflectFolder).onChange(async (value) => {
+        const normalized = normalizePath(value.trim() || "Readwise Inbox/Reflect");
+        this.plugin.settings.reflectFolder = normalized.startsWith("/") ? normalized.slice(1) : normalized;
         await this.plugin.saveSettings();
       }));
 

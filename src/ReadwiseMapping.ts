@@ -1,4 +1,5 @@
 import type { Highlight } from "./types";
+import { normalizeTags } from "./WorkflowRouting.ts";
 
 export const READWISE_EXPORT_ENDPOINT = "https://readwise.io/api/v2/export/";
 
@@ -66,6 +67,10 @@ export function mapReadwiseExportHighlight(book: Record<string, unknown>, item: 
     highlighted_at: firstString(item.highlighted_at, item.created_at, item.updated_at),
     category: firstString(item.category, book.category, "highlight"),
     readwise_url: firstString(item.readwise_url, book.readwise_url, item.url),
+    // Export API highlight tags are objects with a `name`; document/book tags are
+    // intentionally not inherited because they have different scope.
+    tags: normalizeTags(item.tags),
+    workflow: { atomic: "open", reflect: "open", reflectFilePath: "" },
     status: "inbox",
     loadedAt,
     updatedAt: loadedAt
