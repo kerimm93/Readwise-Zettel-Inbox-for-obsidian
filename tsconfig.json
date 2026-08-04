@@ -5,6 +5,7 @@
     "allowJs": false,
     "noImplicitAny": true,
     "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
     "isolatedModules": true,
     "strictNullChecks": true,
     "lib": [
