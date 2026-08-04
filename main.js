@@ -23,7 +23,7 @@ __export(main_exports, {
   default: () => ReadwiseInboxPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 
 // src/AnkiConnect.ts
 var ANKI_CONNECT_ENDPOINT = "http://localhost:8765";
@@ -111,14 +111,101 @@ function mergeFetchedHighlight(existing, next) {
     highlighted_at: next.highlighted_at,
     category: next.category,
     readwise_url: next.readwise_url,
+    tags: next.tags,
     updatedAt: next.updatedAt,
     status: existing.status,
     loadedAt: existing.loadedAt
   };
 }
 
+// src/WorkflowRouting.ts
+function normalizeTags(raw) {
+  if (!Array.isArray(raw)) return [];
+  const values = raw.map((entry) => {
+    if (typeof entry === "string") return entry;
+    if (entry && typeof entry === "object" && typeof entry.name === "string") {
+      return entry.name;
+    }
+    return "";
+  }).map((tag) => tag.trim().toLowerCase()).filter(Boolean);
+  return [...new Set(values)];
+}
+function hasRoute(highlight, route) {
+  return highlight.tags.includes(route === "atomic" ? "make-atomic" : "reflect");
+}
+function isRouteOpen(highlight, route) {
+  return hasRoute(highlight, route) && highlight.workflow[route] === "open";
+}
+function isMasteryAvailable(highlight) {
+  if (highlight.status !== "inbox") return false;
+  return highlight.tags.length === 0 || highlight.tags.includes("make-anki");
+}
+function isReflectManageable(highlight) {
+  return hasRoute(highlight, "reflect") && highlight.workflow.reflect === "processed";
+}
+function isWorkflowVisible(highlight) {
+  if (isRouteOpen(highlight, "atomic") || isRouteOpen(highlight, "reflect")) return true;
+  return isReflectManageable(highlight) || isMasteryAvailable(highlight);
+}
+function reflectActionState(highlight, hasConfirmedFile) {
+  const routed = hasRoute(highlight, "reflect");
+  return {
+    canOpen: routed && highlight.workflow.reflect !== "skipped",
+    canReset: routed && highlight.workflow.reflect === "processed" && hasConfirmedFile,
+    canMark: routed && highlight.workflow.reflect === "open" && hasConfirmedFile,
+    canSkip: routed && highlight.workflow.reflect === "open"
+  };
+}
+function reflectButtonLabels(actions) {
+  const labels = [];
+  if (actions.canOpen) labels.push("Reflect \xF6ffnen");
+  if (actions.canMark) labels.push("Als reflektiert markieren");
+  if (actions.canReset) labels.push("Reflexion zur\xFCcksetzen");
+  if (actions.canSkip) labels.push("Reflect skip");
+  return labels;
+}
+function isConfirmedReflectResolution(kind) {
+  return kind === "found";
+}
+function recordConfirmedReflectFile(confirmed, highlightId) {
+  confirmed.add(highlightId);
+}
+function normalizeWorkflow(raw) {
+  const value = raw && typeof raw === "object" ? raw : {};
+  const status = (item) => item === "processed" || item === "skipped" || item === "open" ? item : "open";
+  return {
+    atomic: status(value.atomic),
+    reflect: status(value.reflect),
+    reflectFilePath: typeof value.reflectFilePath === "string" ? value.reflectFilePath : ""
+  };
+}
+function reconcileReflectStatus(currentStatus, fileExists, reflected) {
+  if (currentStatus === "skipped") return "skipped";
+  if (!fileExists) return currentStatus === "processed" ? "open" : currentStatus;
+  return reflected ? "processed" : "open";
+}
+function shouldUpdateReflectFilePath(currentPath, resolvedPath) {
+  return currentPath !== resolvedPath;
+}
+function shouldUpdateWorkflowStatus(currentStatus, nextStatus) {
+  return currentStatus !== nextStatus;
+}
+
+// src/StateMigration.ts
+function normalizeSourceSchemaVersion(value) {
+  return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value >= 1 ? value : 1;
+}
+function normalizeWorkflowForState(rawWorkflow, globalStatus, sourceSchemaVersion) {
+  const hasExplicitWorkflow = rawWorkflow !== null && typeof rawWorkflow === "object" && !Array.isArray(rawWorkflow);
+  if (hasExplicitWorkflow) return normalizeWorkflow(rawWorkflow);
+  if (sourceSchemaVersion === 1 && globalStatus === "skipped") {
+    return { atomic: "skipped", reflect: "skipped", reflectFilePath: "" };
+  }
+  return normalizeWorkflow(void 0);
+}
+
 // src/InboxState.ts
-var CURRENT_SCHEMA_VERSION = 1;
+var CURRENT_SCHEMA_VERSION = 2;
 var DEFAULT_STATE = {
   highlights: [],
   cards_pending: [],
@@ -148,7 +235,7 @@ var InboxStateStore = class {
     return this.state;
   }
   getInboxHighlights() {
-    return this.state.highlights.filter((highlight) => highlight.status === "inbox");
+    return this.state.highlights.filter((highlight) => isWorkflowVisible(highlight));
   }
   async load() {
     const path = this.getStatePath();
@@ -213,12 +300,32 @@ var InboxStateStore = class {
     await this.save();
     return true;
   }
+  async setWorkflowStatus(id, route, status) {
+    const highlight = this.state.highlights.find((item) => item.id === id);
+    if (!highlight) return false;
+    if (!shouldUpdateWorkflowStatus(highlight.workflow[route], status)) return true;
+    highlight.workflow[route] = status;
+    highlight.updatedAt = nowIso();
+    await this.save();
+    return true;
+  }
+  async setReflectFilePath(id, path) {
+    const highlight = this.state.highlights.find((item) => item.id === id);
+    if (!highlight) return false;
+    const normalizedPath = (0, import_obsidian.normalizePath)(path);
+    if (!shouldUpdateReflectFilePath((0, import_obsidian.normalizePath)(highlight.workflow.reflectFilePath || ""), normalizedPath)) return true;
+    highlight.workflow.reflectFilePath = normalizedPath;
+    highlight.updatedAt = nowIso();
+    await this.save();
+    return true;
+  }
   getStatePath() {
     return (0, import_obsidian.normalizePath)(this.getSettings().statePath || "readwise-inbox.json");
   }
   normalizeState(raw) {
     const source = raw && typeof raw === "object" ? raw : {};
-    const highlights = Array.isArray(source.highlights) ? source.highlights.map((item) => this.normalizeHighlight(item)).filter(Boolean) : [];
+    const sourceSchemaVersion = normalizeSourceSchemaVersion(source.schemaVersion);
+    const highlights = Array.isArray(source.highlights) ? source.highlights.map((item) => this.normalizeHighlight(item, sourceSchemaVersion)).filter(Boolean) : [];
     return {
       highlights,
       cards_pending: Array.isArray(source.cards_pending) ? source.cards_pending : [],
@@ -227,7 +334,7 @@ var InboxStateStore = class {
       schemaVersion: CURRENT_SCHEMA_VERSION
     };
   }
-  normalizeHighlight(raw) {
+  normalizeHighlight(raw, sourceSchemaVersion) {
     if (!raw || typeof raw !== "object") {
       return null;
     }
@@ -237,6 +344,7 @@ var InboxStateStore = class {
       return null;
     }
     const loadedAt = asString(item.loadedAt, nowIso());
+    const status = normalizeStatus(item.status);
     return {
       id: asString(item.id, readwiseId),
       readwise_id: readwiseId,
@@ -249,7 +357,9 @@ var InboxStateStore = class {
       highlighted_at: asString(item.highlighted_at),
       category: asString(item.category, "highlight"),
       readwise_url: asString(item.readwise_url),
-      status: normalizeStatus(item.status),
+      tags: normalizeTags(item.tags),
+      workflow: normalizeWorkflowForState(item.workflow, status, sourceSchemaVersion),
+      status,
       loadedAt,
       updatedAt: asString(item.updatedAt, loadedAt)
     };
@@ -261,14 +371,61 @@ var InboxStateStore = class {
     if (!folder) {
       return;
     }
-    if (!this.app.vault.getAbstractFileByPath(folder)) {
-      await this.app.vault.createFolder(folder);
+    let current = "";
+    for (const part of folder.split("/").filter(Boolean)) {
+      current = current ? `${current}/${part}` : part;
+      if (!this.app.vault.getAbstractFileByPath(current)) await this.app.vault.createFolder(current);
     }
   }
 };
 
 // src/InboxView.ts
 var import_obsidian2 = require("obsidian");
+
+// src/WorkflowActions.ts
+async function completeAtomicWorkflow(store, highlightId) {
+  return store.setWorkflowStatus(highlightId, "atomic", "processed");
+}
+async function fetchReconcileAndRender(fetch2, reconcile, render) {
+  await fetch2();
+  await reconcile();
+  render();
+}
+
+// src/ReflectResolution.ts
+async function buildReflectIndexIfNeeded(highlightIds, build) {
+  return highlightIds.length === 0 ? null : build();
+}
+async function buildReflectCandidateIndex(files, readCandidate, concurrency = 6) {
+  var _a;
+  const candidates = [];
+  let next = 0;
+  const worker = async () => {
+    while (next < files.length) {
+      const index = next++;
+      candidates[index] = await readCandidate(files[index]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, files.length) }, () => worker()));
+  const unique = [...new Map(candidates.map((candidate) => [candidate.path, candidate])).values()];
+  const candidatesByHighlightId = /* @__PURE__ */ new Map();
+  const unreliableCandidates = [];
+  for (const candidate of unique) {
+    if (!candidate.reliable) unreliableCandidates.push(candidate);
+    else if (candidate.id) candidatesByHighlightId.set(candidate.id, [...(_a = candidatesByHighlightId.get(candidate.id)) != null ? _a : [], candidate]);
+  }
+  return { candidatesByHighlightId, unreliableCandidates };
+}
+function resolveReflectFromIndex(index, highlightId) {
+  var _a;
+  const matches = (_a = index.candidatesByHighlightId.get(highlightId)) != null ? _a : [];
+  if (matches.length > 1) return { kind: "ambiguous", files: matches.map((match) => match.file) };
+  if (index.unreliableCandidates.length > 0) return { kind: "unresolved" };
+  if (matches.length === 0) return { kind: "missing" };
+  return { kind: "found", file: matches[0].file, reflected: matches[0].reflected === true };
+}
+
+// src/InboxView.ts
 var VIEW_TYPE_READWISE_INBOX = "readwise-inbox-view";
 var MasteryModal = class extends import_obsidian2.Modal {
   constructor(app, highlight, onSubmit) {
@@ -313,6 +470,7 @@ var InboxView = class extends import_obsidian2.ItemView {
   constructor(leaf, deps) {
     super(leaf);
     this.deps = deps;
+    this.confirmedReflectFiles = /* @__PURE__ */ new Set();
   }
   getViewType() {
     return VIEW_TYPE_READWISE_INBOX;
@@ -325,7 +483,34 @@ var InboxView = class extends import_obsidian2.ItemView {
   }
   async onOpen() {
     await this.deps.stateStore.load();
+    await this.reconcileReflectNotes();
     this.render();
+  }
+  async reconcileReflectNotes() {
+    this.confirmedReflectFiles.clear();
+    const reflectHighlights = this.deps.stateStore.getState().highlights.filter((item) => hasRoute(item, "reflect"));
+    const reflectIndex = await buildReflectIndexIfNeeded(reflectHighlights.map((highlight) => highlight.id), () => this.deps.reflectNotes.buildIndex());
+    for (const highlight of reflectHighlights) {
+      try {
+        const resolution = this.deps.reflectNotes.resolveFromIndex(reflectIndex, highlight.id);
+        if (isConfirmedReflectResolution(resolution.kind)) recordConfirmedReflectFile(this.confirmedReflectFiles, highlight.id);
+        if (resolution.kind === "ambiguous") {
+          new import_obsidian2.Notice(`Mehrere Reflect-Dateien f\xFCr Highlight ${highlight.id} gefunden.`);
+          continue;
+        }
+        if (resolution.kind === "unresolved") continue;
+        const file = resolution.kind === "found" ? resolution.file : null;
+        const reconciledStatus = reconcileReflectStatus(highlight.workflow.reflect, resolution.kind === "found", resolution.kind === "found" && resolution.reflected);
+        if (file) {
+          const currentPath = (0, import_obsidian2.normalizePath)(highlight.workflow.reflectFilePath || "");
+          const resolvedPath = (0, import_obsidian2.normalizePath)(file.path);
+          if (shouldUpdateReflectFilePath(currentPath, resolvedPath)) await this.deps.stateStore.setReflectFilePath(highlight.id, resolvedPath);
+        }
+        if (reconciledStatus !== highlight.workflow.reflect) await this.deps.stateStore.setWorkflowStatus(highlight.id, "reflect", reconciledStatus);
+      } catch (error) {
+        new import_obsidian2.Notice(error instanceof Error ? error.message : "Reflect-Status konnte nicht abgeglichen werden.");
+      }
+    }
   }
   render() {
     const container = this.containerEl.children[1];
@@ -339,7 +524,7 @@ var InboxView = class extends import_obsidian2.ItemView {
     fetchButton.addEventListener("click", () => this.fetchReadwise());
     const highlights = this.deps.stateStore.getInboxHighlights();
     const count = container.createDiv({ cls: "rwi-count" });
-    count.textContent = `${highlights.length} Highlight${highlights.length === 1 ? "" : "s"} in der Inbox`;
+    count.textContent = `${highlights.length} Highlight${highlights.length === 1 ? "" : "s"} im Workflow`;
     if (highlights.length === 0) {
       const empty = container.createDiv({ cls: "rwi-empty" });
       empty.createEl("h2", { text: "Inbox leer" });
@@ -356,6 +541,10 @@ var InboxView = class extends import_obsidian2.ItemView {
     const meta = card.createDiv({ cls: "rwi-meta" });
     meta.createSpan({ text: highlight.source_author || "Unknown author" });
     meta.createSpan({ text: highlight.source_title || "Untitled" });
+    meta.createSpan({ text: highlight.tags.length ? `Tags: ${highlight.tags.join(", ")}` : "Keine Workflow-Tags" });
+    const workflow = card.createDiv({ cls: "rwi-workflows" });
+    if (hasRoute(highlight, "atomic")) workflow.createSpan({ text: `Atomic: ${highlight.workflow.atomic}` });
+    if (hasRoute(highlight, "reflect")) workflow.createSpan({ text: `Reflect: ${highlight.workflow.reflect}` });
     card.createEl("blockquote", { text: highlight.text, cls: "rwi-quote" });
     if (highlight.note) {
       const note = card.createDiv({ cls: "rwi-note" });
@@ -363,15 +552,60 @@ var InboxView = class extends import_obsidian2.ItemView {
       note.appendText(highlight.note);
     }
     const actions = card.createDiv({ cls: "rwi-actions" });
-    actions.createEl("button", { text: "Mastery Card", cls: "rwi-button rwi-button-primary" }).addEventListener("click", () => this.openMastery(highlight));
-    actions.createEl("button", { text: "Atomic Note", cls: "rwi-button" }).addEventListener("click", () => this.openAtomic(highlight));
-    actions.createEl("button", { text: "Skip", cls: "rwi-button rwi-button-muted" }).addEventListener("click", () => this.skip(highlight));
+    if (isMasteryAvailable(highlight)) actions.createEl("button", { text: "Mastery Card", cls: "rwi-button rwi-button-primary" }).addEventListener("click", () => this.openMastery(highlight));
+    if (hasRoute(highlight, "atomic")) {
+      if (highlight.workflow.atomic === "open") {
+        actions.createEl("button", { text: "Atomic Note", cls: "rwi-button" }).addEventListener("click", () => this.openAtomic(highlight));
+        actions.createEl("button", { text: "Atomic skip", cls: "rwi-button rwi-button-muted" }).addEventListener("click", () => this.skipRoute(highlight, "atomic"));
+      }
+    }
+    if (hasRoute(highlight, "reflect")) {
+      const reflectActions = reflectActionState(highlight, this.confirmedReflectFiles.has(highlight.id));
+      for (const label of reflectButtonLabels(reflectActions)) {
+        const button = actions.createEl("button", { text: label, cls: label === "Reflect skip" ? "rwi-button rwi-button-muted" : "rwi-button" });
+        if (label === "Reflect \xF6ffnen") button.addEventListener("click", () => this.openReflect(highlight));
+        else if (label === "Reflect skip") button.addEventListener("click", () => this.skipRoute(highlight, "reflect"));
+        else button.addEventListener("click", () => this.toggleReflect(highlight));
+      }
+    }
+    if (isMasteryAvailable(highlight)) actions.createEl("button", { text: "Skip", cls: "rwi-button rwi-button-muted" }).addEventListener("click", () => this.skip(highlight));
     return card;
+  }
+  async skipRoute(highlight, route) {
+    await this.deps.stateStore.setWorkflowStatus(highlight.id, route, "skipped");
+    new import_obsidian2.Notice(`${route === "atomic" ? "Atomic" : "Reflect"} geskippt.`);
+    this.render();
+  }
+  async openReflect(highlight) {
+    try {
+      const { file, reflected } = await this.deps.reflectNotes.openOrCreate(highlight);
+      recordConfirmedReflectFile(this.confirmedReflectFiles, highlight.id);
+      await this.deps.stateStore.setReflectFilePath(highlight.id, file.path);
+      await this.deps.stateStore.setWorkflowStatus(highlight.id, "reflect", reflected ? "processed" : "open");
+      this.render();
+    } catch (error) {
+      new import_obsidian2.Notice(error instanceof Error ? error.message : "Reflect-Datei konnte nicht ge\xF6ffnet werden.");
+    }
+  }
+  async toggleReflect(highlight) {
+    try {
+      const next = highlight.workflow.reflect !== "processed";
+      const file = await this.deps.reflectNotes.setReflected(highlight, next);
+      recordConfirmedReflectFile(this.confirmedReflectFiles, highlight.id);
+      await this.deps.stateStore.setReflectFilePath(highlight.id, file.path);
+      await this.deps.stateStore.setWorkflowStatus(highlight.id, "reflect", next ? "processed" : "open");
+      this.render();
+    } catch (error) {
+      new import_obsidian2.Notice(error instanceof Error ? error.message : "Reflect-Status konnte nicht ge\xE4ndert werden.");
+    }
   }
   async fetchReadwise() {
     try {
-      await this.deps.readwiseApi.fetchHighlights();
-      this.render();
+      await fetchReconcileAndRender(
+        () => this.deps.readwiseApi.fetchHighlights(),
+        () => this.reconcileReflectNotes(),
+        () => this.render()
+      );
     } catch (error) {
       new import_obsidian2.Notice(error instanceof Error ? error.message : "Readwise Fetch fehlgeschlagen.");
     }
@@ -395,7 +629,7 @@ var InboxView = class extends import_obsidian2.ItemView {
   }
   openAtomic(highlight) {
     this.deps.zettelCreator.openCreateModal(highlight, async () => {
-      await this.deps.stateStore.setStatus(highlight.id, "processed");
+      await completeAtomicWorkflow(this.deps.stateStore, highlight.id);
       new import_obsidian2.Notice("Atomic Note erstellt.");
       this.render();
     });
@@ -463,10 +697,34 @@ function mapReadwiseExportHighlight(book, item, loadedAt = (/* @__PURE__ */ new 
     highlighted_at: firstString(item.highlighted_at, item.created_at, item.updated_at),
     category: firstString(item.category, book.category, "highlight"),
     readwise_url: firstString(item.readwise_url, book.readwise_url, item.url),
+    // Export API highlight tags are objects with a `name`; document/book tags are
+    // intentionally not inherited because they have different scope.
+    tags: normalizeTags(item.tags),
+    workflow: { atomic: "open", reflect: "open", reflectFilePath: "" },
     status: "inbox",
     loadedAt,
     updatedAt: loadedAt
   };
+}
+
+// src/ReadwisePagination.ts
+async function collectReadwiseExportPages(requestPage) {
+  let cursor = null;
+  const seenCursors = /* @__PURE__ */ new Set();
+  const byId = /* @__PURE__ */ new Map();
+  do {
+    const data = await requestPage(cursor);
+    for (const highlight of flattenReadwiseExport(data)) byId.set(highlight.id, highlight);
+    const next = getReadwiseCursor(data);
+    if (next && seenCursors.has(next)) throw new Error(`Readwise lieferte den Cursor ${next} erneut; Fetch abgebrochen.`);
+    if (next) seenCursors.add(next);
+    cursor = next;
+  } while (cursor);
+  return [...byId.values()];
+}
+async function collectThenCommitReadwise(requestPage, commit) {
+  const highlights = await collectReadwiseExportPages(requestPage);
+  return commit(highlights);
 }
 
 // src/ReadwiseApi.ts
@@ -480,30 +738,20 @@ var ReadwiseApi = class {
     if (!token) {
       throw new Error("Readwise API Token fehlt in den Plugin-Einstellungen.");
     }
-    const state = this.stateStore.getState();
-    const url = new URL(READWISE_EXPORT_ENDPOINT);
-    if (state.last_readwise_cursor) {
-      url.searchParams.set("pageCursor", state.last_readwise_cursor);
-    } else {
-      const since = new Date(Date.now() - 24 * 60 * 60 * 1e3).toISOString();
-      url.searchParams.set("updatedAfter", since);
-    }
-    const response = await (0, import_obsidian3.requestUrl)({
-      url: url.toString(),
-      method: "GET",
-      headers: { Authorization: `Token ${token}` }
+    const counts = await collectThenCommitReadwise(async (cursor) => {
+      const url = new URL(READWISE_EXPORT_ENDPOINT);
+      if (cursor) url.searchParams.set("pageCursor", cursor);
+      const response = await (0, import_obsidian3.requestUrl)({ url: url.toString(), method: "GET", headers: { Authorization: `Token ${token}` } });
+      if (response.status < 200 || response.status >= 300) throw new Error(`Readwise Fetch fehlgeschlagen (${response.status}).`);
+      return response.json;
+    }, async (highlights) => {
+      const result = this.stateStore.upsertHighlights(highlights);
+      this.stateStore.setCursor(null);
+      await this.stateStore.save();
+      return result;
     });
-    if (response.status < 200 || response.status >= 300) {
-      throw new Error(`Readwise Fetch fehlgeschlagen (${response.status}).`);
-    }
-    const data = response.json;
-    const highlights = flattenReadwiseExport(data);
-    const counts = this.stateStore.upsertHighlights(highlights);
-    const cursor = getReadwiseCursor(data);
-    this.stateStore.setCursor(cursor);
-    await this.stateStore.save();
     new import_obsidian3.Notice(`Readwise geladen: ${counts.added} neu, ${counts.updated} aktualisiert.`);
-    return { ...counts, cursor };
+    return { ...counts, cursor: null };
   }
 };
 
@@ -658,15 +906,147 @@ ${input.note}
   }
 };
 
+// src/ReflectNoteService.ts
+var import_obsidian5 = require("obsidian");
+
+// src/ReflectMarkdown.ts
+var yaml = (value) => JSON.stringify(value != null ? value : "");
+var MAX_FILENAME_BYTES = 255;
+var encoder = new TextEncoder();
+var utf8ByteLength = (value) => encoder.encode(value).length;
+function truncateUtf8(value, maxBytes) {
+  let result = "";
+  let bytes = 0;
+  for (const codepoint of value) {
+    const size = utf8ByteLength(codepoint);
+    if (bytes + size > maxBytes) break;
+    result += codepoint;
+    bytes += size;
+  }
+  return result.replace(/\s+$/, "");
+}
+function reflectFilename(highlight) {
+  const id = highlight.id.replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, " ").trim();
+  const title = highlight.source_title.replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, " ").trim() || "Ohne Titel";
+  const prefix = `Reflect \u2013 ${id} \u2013 `;
+  const extension = ".md";
+  const titleBudget = MAX_FILENAME_BYTES - utf8ByteLength(prefix) - utf8ByteLength(extension);
+  if (titleBudget < 1) throw new Error(`Readwise-Highlight-ID ist zu lang f\xFCr einen Dateinamen mit maximal ${MAX_FILENAME_BYTES} UTF-8-Bytes.`);
+  const filename = `${prefix}${truncateUtf8(title, titleBudget)}${extension}`;
+  if (utf8ByteLength(filename) > MAX_FILENAME_BYTES) throw new Error("Reflect-Dateiname \xFCberschreitet das UTF-8-Bytelimit.");
+  return filename;
+}
+function buildReflectMarkdown(highlight, createdAt = (/* @__PURE__ */ new Date()).toISOString()) {
+  const title = highlight.source_title.trim() || "Ohne Titel";
+  const quote = highlight.text.split(/\r?\n/).map((line) => `> ${line}`).join("\n");
+  const readwiseNote = highlight.note.trim() || "_Keine Readwise-Notiz vorhanden._";
+  return `---
+type: readwise-reflection
+workflow: reflect
+reflected: false
+reflected_at: ${yaml("")}
+readwise_highlight_id: ${yaml(highlight.id)}
+source_title: ${yaml(title)}
+source_author: ${yaml(highlight.source_author)}
+readwise_url: ${yaml(highlight.readwise_url)}
+source_url: ${yaml(highlight.source_url)}
+created_at: ${yaml(createdAt)}
+---
+
+# ${title}
+
+## Zitat
+
+${quote}
+
+## Readwise-Notiz
+
+${readwiseNote}
+
+## Gedanken und Reflexion
+
+`;
+}
+
+// src/ReflectNoteService.ts
+var ReflectNoteService = class {
+  constructor(app, getSettings) {
+    this.app = app;
+    this.getSettings = getSettings;
+  }
+  async openOrCreate(highlight) {
+    const resolution = await this.resolve(highlight);
+    if (resolution.kind === "ambiguous") throw new Error(`Mehrere Reflect-Dateien f\xFCr Highlight ${highlight.id} gefunden.`);
+    if (resolution.kind === "unresolved") throw new Error("Reflect-Dateien konnten noch nicht zuverl\xE4ssig gepr\xFCft werden. Bitte erneut versuchen.");
+    if (resolution.kind === "found") {
+      await this.app.workspace.getLeaf("tab").openFile(resolution.file);
+      return { file: resolution.file, created: false, reflected: resolution.reflected };
+    }
+    const folder = (0, import_obsidian5.normalizePath)(this.getSettings().reflectFolder || "Readwise Inbox/Reflect");
+    await this.ensureFolder(folder);
+    const path = (0, import_obsidian5.normalizePath)(`${folder}/${reflectFilename(highlight)}`);
+    const collision = this.app.vault.getAbstractFileByPath(path);
+    if (collision instanceof import_obsidian5.TFile) throw new Error(`Reflect-Datei ohne eindeutige Frontmatter existiert bereits: ${path}`);
+    const file = await this.app.vault.create(path, buildReflectMarkdown(highlight));
+    await this.app.workspace.getLeaf("tab").openFile(file);
+    return { file, created: true, reflected: false };
+  }
+  async resolve(highlight) {
+    return this.resolveFromIndex(await this.buildIndex(), highlight.id);
+  }
+  async buildIndex() {
+    return buildReflectCandidateIndex(this.app.vault.getMarkdownFiles(), (file) => this.readCandidate(file));
+  }
+  resolveFromIndex(index, highlightId) {
+    return resolveReflectFromIndex(index, highlightId);
+  }
+  async setReflected(highlight, reflected) {
+    const resolution = await this.resolve(highlight);
+    if (resolution.kind === "ambiguous") throw new Error(`Mehrere Reflect-Dateien f\xFCr Highlight ${highlight.id} gefunden.`);
+    if (resolution.kind === "unresolved") throw new Error("Reflect-Dateien konnten noch nicht zuverl\xE4ssig gepr\xFCft werden. Bitte erneut versuchen.");
+    if (resolution.kind === "missing") throw new Error("Reflect-Datei wurde nicht gefunden. Bitte zuerst erstellen.");
+    const file = resolution.file;
+    await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+      frontmatter.reflected = reflected;
+      frontmatter.reflected_at = reflected ? (/* @__PURE__ */ new Date()).toISOString() : "";
+    });
+    return file;
+  }
+  async readCandidate(file) {
+    try {
+      const cache = this.app.metadataCache.getFileCache(file);
+      let frontmatter = cache == null ? void 0 : cache.frontmatter;
+      if (!frontmatter) {
+        const content = await this.app.vault.cachedRead(file);
+        const info = (0, import_obsidian5.getFrontMatterInfo)(content);
+        frontmatter = info.exists ? (0, import_obsidian5.parseYaml)(info.frontmatter) : {};
+      }
+      const id = frontmatter == null ? void 0 : frontmatter.readwise_highlight_id;
+      return { file, path: file.path, id: id == null ? void 0 : String(id), reflected: (frontmatter == null ? void 0 : frontmatter.reflected) === true, reliable: true };
+    } catch (e) {
+      return { file, path: file.path, reliable: false };
+    }
+  }
+  async ensureFolder(folder) {
+    let current = "";
+    for (const part of folder.split("/").filter(Boolean)) {
+      current = current ? `${current}/${part}` : part;
+      if (!this.app.vault.getAbstractFileByPath(current)) await this.app.vault.createFolder(current);
+    }
+  }
+};
+
 // src/main.ts
+var import_obsidian7 = require("obsidian");
 var DEFAULT_SETTINGS = {
   readwiseToken: "",
   masteryDeck: "Mastery",
   memriseDeck: "Memrise",
   statePath: "readwise-inbox.json",
-  zettelFolder: ""
+  zettelFolder: "",
+  reflectFolder: "Readwise Inbox/Reflect"
 };
-var ReadwiseInboxPlugin = class extends import_obsidian5.Plugin {
+var ReadwiseInboxPlugin = class extends import_obsidian6.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -678,11 +1058,13 @@ var ReadwiseInboxPlugin = class extends import_obsidian5.Plugin {
     this.readwiseApi = new ReadwiseApi(() => this.settings, this.stateStore);
     this.anki = new AnkiConnect();
     this.zettelCreator = new ZettelCreator(this.app, () => this.settings);
+    this.reflectNotes = new ReflectNoteService(this.app, () => this.settings);
     this.registerView(VIEW_TYPE_READWISE_INBOX, (leaf) => new InboxView(leaf, {
       stateStore: this.stateStore,
       readwiseApi: this.readwiseApi,
       anki: this.anki,
       zettelCreator: this.zettelCreator,
+      reflectNotes: this.reflectNotes,
       getSettings: () => this.settings
     }));
     this.addRibbonIcon("inbox", "Readwise Inbox \xF6ffnen", () => this.activateView());
@@ -722,13 +1104,13 @@ var ReadwiseInboxPlugin = class extends import_obsidian5.Plugin {
   async testAnki() {
     try {
       const version = await this.anki.testConnection();
-      new import_obsidian5.Notice(`AnkiConnect verbunden (Version ${version}).`);
+      new import_obsidian6.Notice(`AnkiConnect verbunden (Version ${version}).`);
     } catch (error) {
-      new import_obsidian5.Notice(error instanceof Error ? `AnkiConnect nicht erreichbar: ${error.message}` : "AnkiConnect nicht erreichbar.");
+      new import_obsidian6.Notice(error instanceof Error ? `AnkiConnect nicht erreichbar: ${error.message}` : "AnkiConnect nicht erreichbar.");
     }
   }
 };
-var ReadwiseInboxSettingTab = class extends import_obsidian5.PluginSettingTab {
+var ReadwiseInboxSettingTab = class extends import_obsidian6.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -738,30 +1120,35 @@ var ReadwiseInboxSettingTab = class extends import_obsidian5.PluginSettingTab {
     containerEl.empty();
     containerEl.addClass("rwi-settings");
     containerEl.createEl("h2", { text: "Readwise Inbox Einstellungen" });
-    new import_obsidian5.Setting(containerEl).setName("Readwise API Token").setDesc("Token wird lokal in den Obsidian Plugin-Daten gespeichert und nicht ins Repository geschrieben.").addText((text) => {
+    new import_obsidian6.Setting(containerEl).setName("Readwise API Token").setDesc("Token wird lokal in den Obsidian Plugin-Daten gespeichert und nicht ins Repository geschrieben.").addText((text) => {
       text.inputEl.type = "password";
       text.setPlaceholder("Readwise Token").setValue(this.plugin.settings.readwiseToken).onChange(async (value) => {
         this.plugin.settings.readwiseToken = value.trim();
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian5.Setting(containerEl).setName("Mastery Deck").addText((text) => text.setValue(this.plugin.settings.masteryDeck).onChange(async (value) => {
+    new import_obsidian6.Setting(containerEl).setName("Mastery Deck").addText((text) => text.setValue(this.plugin.settings.masteryDeck).onChange(async (value) => {
       this.plugin.settings.masteryDeck = value;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian5.Setting(containerEl).setName("Memrise Deck").setDesc("Sprint 1 legt nur die Settings und Modellkonstanten an; kein vollst\xE4ndiger Memrise-Flow.").addText((text) => text.setValue(this.plugin.settings.memriseDeck).onChange(async (value) => {
+    new import_obsidian6.Setting(containerEl).setName("Memrise Deck").setDesc("Sprint 1 legt nur die Settings und Modellkonstanten an; kein vollst\xE4ndiger Memrise-Flow.").addText((text) => text.setValue(this.plugin.settings.memriseDeck).onChange(async (value) => {
       this.plugin.settings.memriseDeck = value;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian5.Setting(containerEl).setName("State-Dateipfad").setDesc("Default: readwise-inbox.json").addText((text) => text.setValue(this.plugin.settings.statePath).onChange(async (value) => {
+    new import_obsidian6.Setting(containerEl).setName("State-Dateipfad").setDesc("Default: readwise-inbox.json").addText((text) => text.setValue(this.plugin.settings.statePath).onChange(async (value) => {
       this.plugin.settings.statePath = value.trim() || "readwise-inbox.json";
       await this.plugin.saveSettings();
       await this.plugin.stateStore.load();
     }));
-    new import_obsidian5.Setting(containerEl).setName("Zettel-Zielordner").setDesc("Leer lassen f\xFCr Vault-Root.").addText((text) => text.setPlaceholder("z.B. Zettel").setValue(this.plugin.settings.zettelFolder).onChange(async (value) => {
+    new import_obsidian6.Setting(containerEl).setName("Zettel-Zielordner").setDesc("Leer lassen f\xFCr Vault-Root.").addText((text) => text.setPlaceholder("z.B. Zettel").setValue(this.plugin.settings.zettelFolder).onChange(async (value) => {
       this.plugin.settings.zettelFolder = value.trim();
       await this.plugin.saveSettings();
     }));
-    new import_obsidian5.Setting(containerEl).setName("AnkiConnect").setDesc("Testet http://localhost:8765").addButton((button) => button.setButtonText("Verbindung testen").onClick(() => this.plugin.testAnki()));
+    new import_obsidian6.Setting(containerEl).setName("Ordner f\xFCr Reflexionsnotizen").setDesc("Relativ zum Vault-Root. Default: Readwise Inbox/Reflect").addText((text) => text.setValue(this.plugin.settings.reflectFolder).onChange(async (value) => {
+      const normalized = (0, import_obsidian7.normalizePath)(value.trim() || "Readwise Inbox/Reflect");
+      this.plugin.settings.reflectFolder = normalized.startsWith("/") ? normalized.slice(1) : normalized;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian6.Setting(containerEl).setName("AnkiConnect").setDesc("Testet http://localhost:8765").addButton((button) => button.setButtonText("Verbindung testen").onClick(() => this.plugin.testAnki()));
   }
 };

@@ -1,8 +1,10 @@
 import { App, normalizePath, TFile } from "obsidian";
 import { mergeFetchedHighlight } from "./HighlightMerge";
-import { Highlight, HighlightStatus, InboxState, PluginSettings } from "./types";
+import { Highlight, HighlightStatus, InboxState, PluginSettings, WorkflowStatus } from "./types";
+import { isWorkflowVisible, normalizeTags, shouldUpdateReflectFilePath, shouldUpdateWorkflowStatus, WorkflowRoute } from "./WorkflowRouting";
+import { normalizeSourceSchemaVersion, normalizeWorkflowForState } from "./StateMigration";
 
-const CURRENT_SCHEMA_VERSION = 1;
+const CURRENT_SCHEMA_VERSION = 2;
 
 export const DEFAULT_STATE: InboxState = {
   highlights: [],
@@ -37,7 +39,7 @@ export class InboxStateStore {
   }
 
   getInboxHighlights(): Highlight[] {
-    return this.state.highlights.filter((highlight) => highlight.status === "inbox");
+    return this.state.highlights.filter((highlight) => isWorkflowVisible(highlight));
   }
 
   async load(): Promise<InboxState> {
@@ -114,13 +116,35 @@ export class InboxStateStore {
     return true;
   }
 
+  async setWorkflowStatus(id: string, route: WorkflowRoute, status: WorkflowStatus): Promise<boolean> {
+    const highlight = this.state.highlights.find((item) => item.id === id);
+    if (!highlight) return false;
+    if (!shouldUpdateWorkflowStatus(highlight.workflow[route], status)) return true;
+    highlight.workflow[route] = status;
+    highlight.updatedAt = nowIso();
+    await this.save();
+    return true;
+  }
+
+  async setReflectFilePath(id: string, path: string): Promise<boolean> {
+    const highlight = this.state.highlights.find((item) => item.id === id);
+    if (!highlight) return false;
+    const normalizedPath = normalizePath(path);
+    if (!shouldUpdateReflectFilePath(normalizePath(highlight.workflow.reflectFilePath || ""), normalizedPath)) return true;
+    highlight.workflow.reflectFilePath = normalizedPath;
+    highlight.updatedAt = nowIso();
+    await this.save();
+    return true;
+  }
+
   private getStatePath(): string {
     return normalizePath(this.getSettings().statePath || "readwise-inbox.json");
   }
 
   private normalizeState(raw: unknown): InboxState {
     const source = raw && typeof raw === "object" ? (raw as Partial<InboxState>) : {};
-    const highlights = Array.isArray(source.highlights) ? source.highlights.map((item) => this.normalizeHighlight(item)).filter(Boolean) as Highlight[] : [];
+    const sourceSchemaVersion = normalizeSourceSchemaVersion(source.schemaVersion);
+    const highlights = Array.isArray(source.highlights) ? source.highlights.map((item) => this.normalizeHighlight(item, sourceSchemaVersion)).filter(Boolean) as Highlight[] : [];
     return {
       highlights,
       cards_pending: Array.isArray(source.cards_pending) ? source.cards_pending : [],
@@ -130,7 +154,7 @@ export class InboxStateStore {
     };
   }
 
-  private normalizeHighlight(raw: unknown): Highlight | null {
+  private normalizeHighlight(raw: unknown, sourceSchemaVersion: number): Highlight | null {
     if (!raw || typeof raw !== "object") {
       return null;
     }
@@ -140,6 +164,7 @@ export class InboxStateStore {
       return null;
     }
     const loadedAt = asString(item.loadedAt, nowIso());
+    const status = normalizeStatus(item.status);
     return {
       id: asString(item.id, readwiseId),
       readwise_id: readwiseId,
@@ -152,7 +177,9 @@ export class InboxStateStore {
       highlighted_at: asString(item.highlighted_at),
       category: asString(item.category, "highlight"),
       readwise_url: asString(item.readwise_url),
-      status: normalizeStatus(item.status),
+      tags: normalizeTags(item.tags),
+      workflow: normalizeWorkflowForState(item.workflow, status, sourceSchemaVersion),
+      status,
       loadedAt,
       updatedAt: asString(item.updatedAt, loadedAt)
     };
@@ -165,8 +192,10 @@ export class InboxStateStore {
     if (!folder) {
       return;
     }
-    if (!this.app.vault.getAbstractFileByPath(folder)) {
-      await this.app.vault.createFolder(folder);
+    let current = "";
+    for (const part of folder.split("/").filter(Boolean)) {
+      current = current ? `${current}/${part}` : part;
+      if (!this.app.vault.getAbstractFileByPath(current)) await this.app.vault.createFolder(current);
     }
   }
 }
