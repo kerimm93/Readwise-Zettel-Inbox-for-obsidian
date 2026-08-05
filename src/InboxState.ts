@@ -1,8 +1,8 @@
 import { App, normalizePath, TFile } from "obsidian";
-import { mergeFetchedHighlight } from "./HighlightMerge";
 import { Highlight, HighlightStatus, InboxState, PluginSettings, WorkflowStatus } from "./types";
 import { isWorkflowVisible, normalizeTags, shouldUpdateReflectFilePath, shouldUpdateWorkflowStatus, WorkflowRoute } from "./WorkflowRouting";
 import { normalizeSourceSchemaVersion, normalizeWorkflowForState } from "./StateMigration";
+import { writeThenSwapState } from "./StateTransaction";
 
 const CURRENT_SCHEMA_VERSION = 2;
 
@@ -58,42 +58,13 @@ export class InboxStateStore {
 
   async save(): Promise<void> {
     this.state.updatedAt = nowIso();
-    const path = this.getStatePath();
-    await this.ensureParentFolder(path);
-    const file = this.app.vault.getAbstractFileByPath(path);
-    const serialized = `${JSON.stringify(this.state, null, 2)}\n`;
-    if (file instanceof TFile) {
-      await this.app.vault.modify(file, serialized);
-    } else {
-      await this.app.vault.create(path, serialized);
-    }
+    await this.writeState(this.state);
   }
 
-  upsertHighlights(incoming: Highlight[]): { added: number; updated: number } {
-    let added = 0;
-    let updated = 0;
-    const byId = new Map(this.state.highlights.map((highlight) => [highlight.id, highlight]));
-
-    for (const next of incoming) {
-      const existing = byId.get(next.id);
-      if (!existing) {
-        this.state.highlights.push(next);
-        byId.set(next.id, next);
-        added += 1;
-        continue;
-      }
-
-      Object.assign(existing, mergeFetchedHighlight(existing, next));
-      updated += 1;
-    }
-
-    this.state.updatedAt = nowIso();
-    return { added, updated };
-  }
-
-  setCursor(cursor: string | null): void {
-    this.state.last_readwise_cursor = cursor;
-    this.state.updatedAt = nowIso();
+  async replaceStateOnce(nextState: InboxState): Promise<void> {
+    const previous = this.state;
+    const candidate = { ...nextState, updatedAt: nowIso(), schemaVersion: CURRENT_SCHEMA_VERSION };
+    this.state = await writeThenSwapState(previous, candidate, (state) => this.writeState(state));
   }
 
   async setStatus(id: string, status: HighlightStatus): Promise<boolean> {
@@ -135,6 +106,18 @@ export class InboxStateStore {
     highlight.updatedAt = nowIso();
     await this.save();
     return true;
+  }
+
+  private async writeState(state: InboxState): Promise<void> {
+    const path = this.getStatePath();
+    await this.ensureParentFolder(path);
+    const file = this.app.vault.getAbstractFileByPath(path);
+    const serialized = `${JSON.stringify(state, null, 2)}\n`;
+    if (file instanceof TFile) {
+      await this.app.vault.modify(file, serialized);
+    } else {
+      await this.app.vault.create(path, serialized);
+    }
   }
 
   private getStatePath(): string {

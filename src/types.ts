@@ -54,5 +54,7 @@ export interface PluginSettings {
 export interface ReadwiseFetchResult {
   added: number;
   updated: number;
+  removed: number;
+  active: number;
   cursor: string | null;
 }

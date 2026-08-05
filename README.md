@@ -1,6 +1,6 @@
 # Readwise Inbox for Obsidian
 
-**Readwise Inbox** ist ein Obsidian-Plugin zur Verarbeitung von Readwise-Highlights. Highlights werden als Inbox angezeigt und können direkt in **Anki-Mastery-Karten**, **Atomic Notes im Obsidian Vault** oder **Skip** überführt werden.
+**Readwise Inbox** ist ein Obsidian-Plugin zur Verarbeitung aktiv getaggter Readwise-Highlights. Nach einem erfolgreichen manuellen Vollabgleich werden nur Highlights mit `make-anki`, `make-atomic` oder `reflect` im Arbeitsstate gehalten und können in **Anki-Mastery-Karten**, **Atomic Notes im Obsidian Vault** oder **Reflect-Notizen** überführt werden.
 
 Das Projekt ist aus einer Single-File-HTML-App entstanden. Diese App liegt weiterhin als Referenz unter `reference/index.html`, ist aber nicht mehr die Zielarchitektur. Die produktive Richtung ist ein TypeScript-basiertes Obsidian Community Plugin mit Vault-Dateien statt IndexedDB/Gist-Sync.
 
@@ -20,14 +20,14 @@ Bereits vorhanden:
 * Plugin-Settings für Readwise Token, Decknamen, State-Dateipfad und Zettel-Zielordner
 * Vault-State über `readwise-inbox.json`
 * manueller Readwise-Fetch über die Readwise Export API
-* Inbox-Anzeige für unverarbeitete Highlights
+* Inbox-Anzeige für aktive Workflow-Highlights mit `make-anki`, `make-atomic` oder `reflect`
 * Skip-Funktion
 * Mastery Card Modal mit AnkiConnect-Push
 * Atomic Note Modal
 * direkte Markdown-Dateierstellung im Vault
 * Structured-Tree-Dateinamen über Parent-Fuzzy-Search
 * warme Papier-/Schreibtisch-Ästhetik
-* unabhängiges Routing über die Highlight-Tags `make-atomic` und `reflect`
+* unabhängiges Routing über die Highlight-Tags `make-anki`, `make-atomic` und `reflect`
 * idempotente Reflect-Dateien mit Frontmatter als Abschluss-Wahrheit
 
 Noch nicht produktionsreif / später geplant:
@@ -63,7 +63,7 @@ Das Plugin soll keine zweite komplette Readwise-Datenbank aufbauen. `readwise-in
 
 ### Readwise Inbox
 
-Die Inbox zeigt alle Highlights mit Status `inbox`.
+Die Inbox zeigt nur zentral als aktiv definierte Workflow-Highlights: Ein Highlight muss mindestens eines der Tags `make-anki`, `make-atomic` oder `reflect` besitzen und zusätzlich nach den bestehenden Workflow-Statusregeln sichtbar sein. Ungetaggte Highlights, `nothing` allein sowie rein thematische oder unbekannte Tags werden nach einem erfolgreichen Vollabgleich nicht in `readwise-inbox.json` gehalten. `nothing` blockiert ein zusätzlich vorhandenes positives Workflow-Tag nicht.
 
 Pro Highlight stehen aktuell Aktionen bereit:
 
@@ -71,7 +71,7 @@ Pro Highlight stehen aktuell Aktionen bereit:
 * **Atomic Note**
 * **Skip**
 
-Der Fetch erfolgt manuell über die View. Beim ersten Laden wird ein begrenzter Erstimport verwendet; danach arbeitet der Fetch cursor-basiert weiter.
+Der Fetch erfolgt manuell über die View und lädt die Readwise Export API vollständig paginiert. Während der Pagination wird der produktive State nicht verändert; erst nach erfolgreichem Abschluss ersetzt ein kompakter aktiver Highlight-Satz den bisherigen Highlight-State.
 
 ---
 
@@ -305,6 +305,9 @@ Verarbeitungswegs als `open` migriert. Ein früheres globales `skipped` wird
 dagegen für beide Routen als `skipped` übernommen, weil diese Entscheidung das
 gesamte Highlight betraf. Bereits vorhandene explizite Workflowfelder werden
 unabhängig vom globalen Status normalisiert und bewahrt.
+
+
+Nach einem vollständigen manuellen Abgleich enthält `state.highlights` ausschließlich positiv getaggte Workflow-Highlights. IDs, deren letztes positives Workflow-Tag entfernt wurde, verschwinden aus dem gespeicherten Highlight-State; Vault-Dateien, Anki-Karten und Readwise-Daten werden dabei nicht gelöscht oder geändert. Wird später erneut ein positives Tag gesetzt, erscheint das Highlight nach dem nächsten Vollabgleich wieder: Reflect kann vorhandene Dateien über `readwise_highlight_id` und Frontmatter rekonstruieren, Atomic und Anki starten ohne separaten History-Index konservativ offen. Ein alter großer State wird beim normalen Plugin-Start noch vollständig gelesen und nicht dauerhaft anhand lokaler Legacy-Tags verworfen; die endgültige Verdichtung geschieht erst nach einem erfolgreichen manuellen Vollabgleich. Danach laden normale Starts nur noch den kompakten aktiven State.
 
 Reflect-Dateien heißen `Reflect – <Highlight-ID> – <Titel>.md`. Vor Erstellung
 wird zuerst der gecachte Pfad und danach die Frontmatter-ID aller Markdown-

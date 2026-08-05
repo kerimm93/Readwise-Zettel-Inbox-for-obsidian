@@ -17,7 +17,8 @@ export function mergeFetchedHighlight(existing: Highlight, next: Highlight): Hig
     highlighted_at: next.highlighted_at,
     category: next.category,
     readwise_url: next.readwise_url,
-    tags: next.tags,
+    tags: [...next.tags],
+    workflow: { ...existing.workflow },
     updatedAt: next.updatedAt,
     status: existing.status,
     loadedAt: existing.loadedAt

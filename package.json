@@ -11,7 +11,8 @@
     ,"test:workflow": "node --experimental-strip-types tests/workflow-reflect.test.ts",
     "test:resolution-pagination": "node --experimental-strip-types tests/resolution-pagination.test.ts",
     "test:migration": "node --experimental-strip-types tests/state-migration.test.ts",
-    "test": "npm run test:inbox-state && npm run test:readwise-fixture && npm run test:workflow && npm run test:resolution-pagination && npm run test:migration"
+    "test:compaction": "node --experimental-strip-types tests/state-compaction.test.ts",
+    "test": "npm run test:inbox-state && npm run test:readwise-fixture && npm run test:workflow && npm run test:resolution-pagination && npm run test:migration && npm run test:compaction"
   },
   "keywords": [
     "obsidian",
