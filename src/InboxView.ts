@@ -5,9 +5,9 @@ import { ReadwiseApi } from "./ReadwiseApi";
 import { Highlight, PluginSettings } from "./types";
 import { ZettelCreator } from "./ZettelCreator";
 import { ReflectNoteService } from "./ReflectNoteService";
-import { hasRoute, isConfirmedReflectResolution, isMasteryAvailable, reconcileReflectStatus, recordConfirmedReflectFile, reflectActionState, reflectButtonLabels, shouldUpdateReflectFilePath } from "./WorkflowRouting";
+import { hasRoute, isMasteryAvailable, recordConfirmedReflectFile, reflectActionState, reflectButtonLabels } from "./WorkflowRouting";
 import { completeAtomicWorkflow, fetchReconcileAndRender } from "./WorkflowActions";
-import { buildReflectIndexIfNeeded } from "./ReflectResolution";
+import { reconcileReflectHighlightsInMemory } from "./ReflectReconciliation";
 
 export const VIEW_TYPE_READWISE_INBOX = "readwise-inbox-view";
 
@@ -94,28 +94,13 @@ export class InboxView extends ItemView {
   }
 
   private async reconcileReflectNotes(): Promise<void> {
-    this.confirmedReflectFiles.clear();
-    const reflectHighlights = this.deps.stateStore.getState().highlights.filter((item) => hasRoute(item, "reflect"));
-    const reflectIndex = await buildReflectIndexIfNeeded(reflectHighlights.map((highlight) => highlight.id), () => this.deps.reflectNotes.buildIndex());
-    for (const highlight of reflectHighlights) {
-      try {
-        const resolution = this.deps.reflectNotes.resolveFromIndex(reflectIndex!, highlight.id);
-        if (isConfirmedReflectResolution(resolution.kind)) recordConfirmedReflectFile(this.confirmedReflectFiles, highlight.id);
-        if (resolution.kind === "ambiguous") {
-          new Notice(`Mehrere Reflect-Dateien für Highlight ${highlight.id} gefunden.`);
-          continue;
-        }
-        if (resolution.kind === "unresolved") continue;
-        const file = resolution.kind === "found" ? resolution.file : null;
-        const reconciledStatus = reconcileReflectStatus(highlight.workflow.reflect, resolution.kind === "found", resolution.kind === "found" && resolution.reflected);
-        if (file) {
-          const currentPath = normalizePath(highlight.workflow.reflectFilePath || "");
-          const resolvedPath = normalizePath(file.path);
-          if (shouldUpdateReflectFilePath(currentPath, resolvedPath)) await this.deps.stateStore.setReflectFilePath(highlight.id, resolvedPath);
-        }
-        if (reconciledStatus !== highlight.workflow.reflect) await this.deps.stateStore.setWorkflowStatus(highlight.id, "reflect", reconciledStatus);
-      } catch (error) { new Notice(error instanceof Error ? error.message : "Reflect-Status konnte nicht abgeglichen werden."); }
-    }
+    const changed = await reconcileReflectHighlightsInMemory(
+      this.deps.stateStore.getState().highlights,
+      this.deps.reflectNotes,
+      this.confirmedReflectFiles,
+      (message) => new Notice(message)
+    );
+    if (changed > 0) await this.deps.stateStore.save();
   }
 
   render(): void {
@@ -217,8 +202,8 @@ export class InboxView extends ItemView {
   private async fetchReadwise(): Promise<void> {
     try {
       await fetchReconcileAndRender(
-        () => this.deps.readwiseApi.fetchHighlights(),
-        () => this.reconcileReflectNotes(),
+        () => this.deps.readwiseApi.fetchHighlights((candidate) => reconcileReflectHighlightsInMemory(candidate.highlights, this.deps.reflectNotes, this.confirmedReflectFiles, (message) => new Notice(message)).then(() => undefined)),
+        () => Promise.resolve(),
         () => this.render()
       );
     } catch (error) {
