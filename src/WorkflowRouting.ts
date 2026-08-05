@@ -1,4 +1,5 @@
 import type { Highlight, WorkflowStatus } from "./types.ts";
+import { hasPositiveWorkflowTag } from "./ActiveWorkflow.ts";
 
 export type WorkflowRoute = "atomic" | "reflect";
 
@@ -24,7 +25,7 @@ export function isRouteOpen(highlight: Pick<Highlight, "tags" | "workflow">, rou
 
 export function isMasteryAvailable(highlight: Pick<Highlight, "tags" | "status">): boolean {
   if (highlight.status !== "inbox") return false;
-  return highlight.tags.length === 0 || highlight.tags.includes("make-anki");
+  return highlight.tags.includes("make-anki");
 }
 
 export function isReflectManageable(highlight: Pick<Highlight, "tags" | "workflow">): boolean {
@@ -32,6 +33,7 @@ export function isReflectManageable(highlight: Pick<Highlight, "tags" | "workflo
 }
 
 export function isWorkflowVisible(highlight: Pick<Highlight, "tags" | "workflow" | "status">): boolean {
+  if (!hasPositiveWorkflowTag(highlight)) return false;
   if (isRouteOpen(highlight, "atomic") || isRouteOpen(highlight, "reflect")) return true;
   return isReflectManageable(highlight) || isMasteryAvailable(highlight);
 }

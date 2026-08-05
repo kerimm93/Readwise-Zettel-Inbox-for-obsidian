@@ -97,25 +97,14 @@ var AnkiConnect = class {
 // src/InboxState.ts
 var import_obsidian = require("obsidian");
 
-// src/HighlightMerge.ts
-function mergeFetchedHighlight(existing, next) {
-  return {
-    ...existing,
-    readwise_id: next.readwise_id,
-    text: next.text,
-    note: next.note,
-    source_title: next.source_title,
-    source_author: next.source_author,
-    source_url: next.source_url,
-    source_cover: next.source_cover,
-    highlighted_at: next.highlighted_at,
-    category: next.category,
-    readwise_url: next.readwise_url,
-    tags: next.tags,
-    updatedAt: next.updatedAt,
-    status: existing.status,
-    loadedAt: existing.loadedAt
-  };
+// src/ActiveWorkflow.ts
+var POSITIVE_WORKFLOW_TAGS = ["make-anki", "make-atomic", "reflect"];
+var POSITIVE_WORKFLOW_TAG_SET = new Set(POSITIVE_WORKFLOW_TAGS);
+function hasPositiveWorkflowTag(highlight) {
+  return highlight.tags.some((tag) => POSITIVE_WORKFLOW_TAG_SET.has(String(tag).trim().toLowerCase()));
+}
+function isActiveWorkflowHighlight(highlight) {
+  return hasPositiveWorkflowTag(highlight);
 }
 
 // src/WorkflowRouting.ts
@@ -138,12 +127,13 @@ function isRouteOpen(highlight, route) {
 }
 function isMasteryAvailable(highlight) {
   if (highlight.status !== "inbox") return false;
-  return highlight.tags.length === 0 || highlight.tags.includes("make-anki");
+  return highlight.tags.includes("make-anki");
 }
 function isReflectManageable(highlight) {
   return hasRoute(highlight, "reflect") && highlight.workflow.reflect === "processed";
 }
 function isWorkflowVisible(highlight) {
+  if (!hasPositiveWorkflowTag(highlight)) return false;
   if (isRouteOpen(highlight, "atomic") || isRouteOpen(highlight, "reflect")) return true;
   return isReflectManageable(highlight) || isMasteryAvailable(highlight);
 }
@@ -204,6 +194,17 @@ function normalizeWorkflowForState(rawWorkflow, globalStatus, sourceSchemaVersio
   return normalizeWorkflow(void 0);
 }
 
+// src/StateTransaction.ts
+async function writeThenSwapState(previous, candidate, write) {
+  try {
+    await write(candidate);
+    return candidate;
+  } catch (error) {
+    void previous;
+    throw error;
+  }
+}
+
 // src/InboxState.ts
 var CURRENT_SCHEMA_VERSION = 2;
 var DEFAULT_STATE = {
@@ -251,38 +252,12 @@ var InboxStateStore = class {
   }
   async save() {
     this.state.updatedAt = nowIso();
-    const path = this.getStatePath();
-    await this.ensureParentFolder(path);
-    const file = this.app.vault.getAbstractFileByPath(path);
-    const serialized = `${JSON.stringify(this.state, null, 2)}
-`;
-    if (file instanceof import_obsidian.TFile) {
-      await this.app.vault.modify(file, serialized);
-    } else {
-      await this.app.vault.create(path, serialized);
-    }
+    await this.writeState(this.state);
   }
-  upsertHighlights(incoming) {
-    let added = 0;
-    let updated = 0;
-    const byId = new Map(this.state.highlights.map((highlight) => [highlight.id, highlight]));
-    for (const next of incoming) {
-      const existing = byId.get(next.id);
-      if (!existing) {
-        this.state.highlights.push(next);
-        byId.set(next.id, next);
-        added += 1;
-        continue;
-      }
-      Object.assign(existing, mergeFetchedHighlight(existing, next));
-      updated += 1;
-    }
-    this.state.updatedAt = nowIso();
-    return { added, updated };
-  }
-  setCursor(cursor) {
-    this.state.last_readwise_cursor = cursor;
-    this.state.updatedAt = nowIso();
+  async replaceStateOnce(nextState) {
+    const previous = this.state;
+    const candidate = { ...nextState, updatedAt: nowIso(), schemaVersion: CURRENT_SCHEMA_VERSION };
+    this.state = await writeThenSwapState(previous, candidate, (state) => this.writeState(state));
   }
   async setStatus(id, status) {
     const highlight = this.state.highlights.find((item) => item.id === id);
@@ -318,6 +293,18 @@ var InboxStateStore = class {
     highlight.updatedAt = nowIso();
     await this.save();
     return true;
+  }
+  async writeState(state) {
+    const path = this.getStatePath();
+    await this.ensureParentFolder(path);
+    const file = this.app.vault.getAbstractFileByPath(path);
+    const serialized = `${JSON.stringify(state, null, 2)}
+`;
+    if (file instanceof import_obsidian.TFile) {
+      await this.app.vault.modify(file, serialized);
+    } else {
+      await this.app.vault.create(path, serialized);
+    }
   }
   getStatePath() {
     return (0, import_obsidian.normalizePath)(this.getSettings().statePath || "readwise-inbox.json");
@@ -425,6 +412,58 @@ function resolveReflectFromIndex(index, highlightId) {
   return { kind: "found", file: matches[0].file, reflected: matches[0].reflected === true };
 }
 
+// src/ReflectReconciliation.ts
+function normalizeLocalPath(path) {
+  return path.replace(/\\/g, "/").replace(/\/+/g, "/");
+}
+async function reconcileReflectHighlightsInMemory(highlights, reflectNotes, confirmed, notify = () => {
+}, now = () => (/* @__PURE__ */ new Date()).toISOString(), errorMode = "best-effort") {
+  confirmed.clear();
+  const reflectHighlights = highlights.filter((item) => isActiveWorkflowHighlight(item) && hasRoute(item, "reflect"));
+  const reflectIndex = await buildReflectIndexIfNeeded(reflectHighlights.map((highlight) => highlight.id), () => reflectNotes.buildIndex());
+  let reconciled = 0;
+  for (const highlight of reflectHighlights) {
+    try {
+      const resolution = reflectNotes.resolveFromIndex(reflectIndex, highlight.id);
+      if (isConfirmedReflectResolution(resolution.kind)) recordConfirmedReflectFile(confirmed, highlight.id);
+      if (resolution.kind === "ambiguous") {
+        notify(`Mehrere Reflect-Dateien f\xFCr Highlight ${highlight.id} gefunden.`);
+        continue;
+      }
+      if (resolution.kind === "unresolved") continue;
+      const file = resolution.kind === "found" ? resolution.file : null;
+      const reconciledStatus = reconcileReflectStatus(highlight.workflow.reflect, resolution.kind === "found", resolution.kind === "found" && resolution.reflected);
+      if (file) {
+        const currentPath = normalizeLocalPath(highlight.workflow.reflectFilePath || "");
+        const resolvedPath = normalizeLocalPath(file.path);
+        if (shouldUpdateReflectFilePath(currentPath, resolvedPath)) {
+          highlight.workflow.reflectFilePath = resolvedPath;
+          highlight.updatedAt = now();
+          reconciled += 1;
+        }
+      }
+      if (reconciledStatus !== highlight.workflow.reflect) {
+        highlight.workflow.reflect = reconciledStatus;
+        highlight.updatedAt = now();
+        reconciled += 1;
+      }
+    } catch (error) {
+      if (errorMode === "strict") throw error;
+      notify(error instanceof Error ? error.message : "Reflect-Status konnte nicht abgeglichen werden.");
+    }
+  }
+  return reconciled;
+}
+async function prepareReflectCandidateReconciliation(highlights, reflectNotes, visibleConfirmed, notify = () => {
+}, now = () => (/* @__PURE__ */ new Date()).toISOString()) {
+  const nextConfirmed = /* @__PURE__ */ new Set();
+  await reconcileReflectHighlightsInMemory(highlights, reflectNotes, nextConfirmed, notify, now, "strict");
+  return () => {
+    visibleConfirmed.clear();
+    for (const id of nextConfirmed) visibleConfirmed.add(id);
+  };
+}
+
 // src/InboxView.ts
 var VIEW_TYPE_READWISE_INBOX = "readwise-inbox-view";
 var MasteryModal = class extends import_obsidian2.Modal {
@@ -487,30 +526,13 @@ var InboxView = class extends import_obsidian2.ItemView {
     this.render();
   }
   async reconcileReflectNotes() {
-    this.confirmedReflectFiles.clear();
-    const reflectHighlights = this.deps.stateStore.getState().highlights.filter((item) => hasRoute(item, "reflect"));
-    const reflectIndex = await buildReflectIndexIfNeeded(reflectHighlights.map((highlight) => highlight.id), () => this.deps.reflectNotes.buildIndex());
-    for (const highlight of reflectHighlights) {
-      try {
-        const resolution = this.deps.reflectNotes.resolveFromIndex(reflectIndex, highlight.id);
-        if (isConfirmedReflectResolution(resolution.kind)) recordConfirmedReflectFile(this.confirmedReflectFiles, highlight.id);
-        if (resolution.kind === "ambiguous") {
-          new import_obsidian2.Notice(`Mehrere Reflect-Dateien f\xFCr Highlight ${highlight.id} gefunden.`);
-          continue;
-        }
-        if (resolution.kind === "unresolved") continue;
-        const file = resolution.kind === "found" ? resolution.file : null;
-        const reconciledStatus = reconcileReflectStatus(highlight.workflow.reflect, resolution.kind === "found", resolution.kind === "found" && resolution.reflected);
-        if (file) {
-          const currentPath = (0, import_obsidian2.normalizePath)(highlight.workflow.reflectFilePath || "");
-          const resolvedPath = (0, import_obsidian2.normalizePath)(file.path);
-          if (shouldUpdateReflectFilePath(currentPath, resolvedPath)) await this.deps.stateStore.setReflectFilePath(highlight.id, resolvedPath);
-        }
-        if (reconciledStatus !== highlight.workflow.reflect) await this.deps.stateStore.setWorkflowStatus(highlight.id, "reflect", reconciledStatus);
-      } catch (error) {
-        new import_obsidian2.Notice(error instanceof Error ? error.message : "Reflect-Status konnte nicht abgeglichen werden.");
-      }
-    }
+    const changed = await reconcileReflectHighlightsInMemory(
+      this.deps.stateStore.getState().highlights,
+      this.deps.reflectNotes,
+      this.confirmedReflectFiles,
+      (message) => new import_obsidian2.Notice(message)
+    );
+    if (changed > 0) await this.deps.stateStore.save();
   }
   render() {
     const container = this.containerEl.children[1];
@@ -602,8 +624,8 @@ var InboxView = class extends import_obsidian2.ItemView {
   async fetchReadwise() {
     try {
       await fetchReconcileAndRender(
-        () => this.deps.readwiseApi.fetchHighlights(),
-        () => this.reconcileReflectNotes(),
+        () => this.deps.readwiseApi.fetchHighlights(async (candidate) => prepareReflectCandidateReconciliation(candidate.highlights, this.deps.reflectNotes, this.confirmedReflectFiles, (message) => new import_obsidian2.Notice(message))),
+        () => Promise.resolve(),
         () => this.render()
       );
     } catch (error) {
@@ -722,9 +744,58 @@ async function collectReadwiseExportPages(requestPage) {
   } while (cursor);
   return [...byId.values()];
 }
-async function collectThenCommitReadwise(requestPage, commit) {
-  const highlights = await collectReadwiseExportPages(requestPage);
-  return commit(highlights);
+
+// src/HighlightMerge.ts
+function mergeFetchedHighlight(existing, next) {
+  return {
+    ...existing,
+    readwise_id: next.readwise_id,
+    text: next.text,
+    note: next.note,
+    source_title: next.source_title,
+    source_author: next.source_author,
+    source_url: next.source_url,
+    source_cover: next.source_cover,
+    highlighted_at: next.highlighted_at,
+    category: next.category,
+    readwise_url: next.readwise_url,
+    tags: [...next.tags],
+    workflow: { ...existing.workflow },
+    updatedAt: next.updatedAt,
+    status: existing.status,
+    loadedAt: existing.loadedAt
+  };
+}
+
+// src/StateCompaction.ts
+function buildActiveStateReplacement(previous, exported) {
+  const previousById = new Map(previous.highlights.map((highlight) => [highlight.id, highlight]));
+  const exportedById = /* @__PURE__ */ new Map();
+  for (const highlight of exported) exportedById.set(highlight.id, highlight);
+  const nextHighlights = [];
+  let added = 0;
+  let updated = 0;
+  for (const next of exportedById.values()) {
+    if (!isActiveWorkflowHighlight(next)) continue;
+    const existing = previousById.get(next.id);
+    if (existing) {
+      nextHighlights.push(mergeFetchedHighlight(existing, next));
+      updated += 1;
+    } else {
+      nextHighlights.push(next);
+      added += 1;
+    }
+  }
+  const nextIds = new Set(nextHighlights.map((highlight) => highlight.id));
+  let removed = 0;
+  for (const existing of previous.highlights) if (!nextIds.has(existing.id)) removed += 1;
+  return {
+    state: { ...previous, highlights: nextHighlights, last_readwise_cursor: null },
+    added,
+    updated,
+    removed,
+    active: nextHighlights.length
+  };
 }
 
 // src/ReadwiseApi.ts
@@ -733,25 +804,24 @@ var ReadwiseApi = class {
     this.getSettings = getSettings;
     this.stateStore = stateStore;
   }
-  async fetchHighlights() {
+  async fetchHighlights(reconcileCandidate) {
     const token = this.getSettings().readwiseToken.trim();
     if (!token) {
       throw new Error("Readwise API Token fehlt in den Plugin-Einstellungen.");
     }
-    const counts = await collectThenCommitReadwise(async (cursor) => {
+    const highlights = await collectReadwiseExportPages(async (cursor) => {
       const url = new URL(READWISE_EXPORT_ENDPOINT);
       if (cursor) url.searchParams.set("pageCursor", cursor);
       const response = await (0, import_obsidian3.requestUrl)({ url: url.toString(), method: "GET", headers: { Authorization: `Token ${token}` } });
       if (response.status < 200 || response.status >= 300) throw new Error(`Readwise Fetch fehlgeschlagen (${response.status}).`);
       return response.json;
-    }, async (highlights) => {
-      const result = this.stateStore.upsertHighlights(highlights);
-      this.stateStore.setCursor(null);
-      await this.stateStore.save();
-      return result;
     });
-    new import_obsidian3.Notice(`Readwise geladen: ${counts.added} neu, ${counts.updated} aktualisiert.`);
-    return { ...counts, cursor: null };
+    const replacement = buildActiveStateReplacement(this.stateStore.getState(), highlights);
+    const afterCommit = reconcileCandidate ? await reconcileCandidate(replacement.state) : void 0;
+    await this.stateStore.replaceStateOnce(replacement.state);
+    if (afterCommit) afterCommit();
+    new import_obsidian3.Notice(`Readwise geladen: ${replacement.added} neu/neu aktiv, ${replacement.updated} aktualisiert, ${replacement.removed} entfernt/nicht \xFCbernommen, ${replacement.active} aktiv.`);
+    return { added: replacement.added, updated: replacement.updated, removed: replacement.removed, active: replacement.active, cursor: null };
   }
 };
 

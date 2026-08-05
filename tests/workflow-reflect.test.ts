@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { buildReflectMarkdown, MAX_FILENAME_BYTES, reflectFilename, truncateUtf8, utf8ByteLength } from "../src/ReflectMarkdown.ts";
 import { hasRoute, isConfirmedReflectResolution, isMasteryAvailable, isReflectManageable, isWorkflowVisible, normalizeTags, normalizeWorkflow, reconcileReflectStatus, recordConfirmedReflectFile, reflectActionState, reflectButtonLabels, shouldUpdateReflectFilePath, shouldUpdateWorkflowStatus, withWorkflowStatus } from "../src/WorkflowRouting.ts";
+import { hasPositiveWorkflowTag, POSITIVE_WORKFLOW_TAGS } from "../src/ActiveWorkflow.ts";
 import { completeAtomicWorkflow, fetchReconcileAndRender } from "../src/WorkflowActions.ts";
 import type { Highlight } from "../src/types.ts";
 
@@ -16,6 +17,29 @@ for (const [tags, atomic, reflect] of [
   assert.equal(hasRoute(item, "reflect"), reflect);
 }
 
+
+assert.deepEqual(POSITIVE_WORKFLOW_TAGS, ["make-anki", "make-atomic", "reflect"]);
+for (const tags of [[], ["nothing"], ["unknown"], ["philosophy"]]) assert.equal(hasPositiveWorkflowTag({ tags }), false);
+for (const [tags, mastery, atomic, reflect] of [
+  [["make-anki"], true, false, false],
+  [["make-atomic"], false, true, false],
+  [["reflect"], false, false, true],
+  [["make-anki", "make-atomic"], true, true, false],
+  [["make-atomic", "reflect"], false, true, true],
+  [["make-anki", "reflect"], true, false, true],
+  [["make-anki", "make-atomic", "reflect"], true, true, true],
+  [["nothing", "make-anki"], true, false, false],
+  [["nothing", "make-atomic"], false, true, false],
+  [["nothing", "reflect"], false, false, true]
+] as const) {
+  const item = { ...base, tags: [...tags], status: "inbox" as const };
+  assert.equal(hasPositiveWorkflowTag(item), true);
+  assert.equal(isMasteryAvailable(item), mastery);
+  assert.equal(hasRoute(item, "atomic"), atomic);
+  assert.equal(hasRoute(item, "reflect"), reflect);
+}
+assert.equal(isMasteryAvailable({ ...base, tags: [], status: "inbox" }), false);
+
 assert.deepEqual(normalizeWorkflow(undefined), { atomic: "open", reflect: "open", reflectFilePath: "" });
 assert.deepEqual(normalizeWorkflow({ atomic: "processed", reflect: "skipped", reflectFilePath: "x.md" }), { atomic: "processed", reflect: "skipped", reflectFilePath: "x.md" });
 const both = { ...base, tags: ["make-atomic", "reflect"] };
@@ -26,10 +50,10 @@ assert.equal(isWorkflowVisible({ ...both, status: "processed" }), true);
 assert.equal(isWorkflowVisible({ ...both, status: "skipped" }), true);
 assert.equal(isWorkflowVisible({ ...base, tags: ["make-anki"], status: "inbox" }), true);
 assert.equal(isWorkflowVisible({ ...base, tags: ["nothing"], status: "inbox" }), false);
-assert.equal(isWorkflowVisible({ ...base, tags: [], status: "inbox" }), true);
+assert.equal(isWorkflowVisible({ ...base, tags: [], status: "inbox" }), false);
 
 for (const [tags, status, expected] of [
-  [[], "inbox", true], [[], "processed", false], [["make-anki"], "inbox", true],
+  [[], "inbox", false], [[], "processed", false], [["make-anki"], "inbox", true],
   [["make-anki"], "processed", false], [["make-atomic"], "inbox", false],
   [["reflect"], "inbox", false], [["make-atomic", "make-anki"], "inbox", true],
   [["make-atomic", "make-anki"], "processed", false], [["nothing", "make-anki"], "inbox", true],
